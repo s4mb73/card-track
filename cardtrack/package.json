@@ -1,0 +1,19 @@
+{
+  "name": "cardtrack",
+  "version": "1.0.0",
+  "description": "CardTrack hourly order checker — polls Royal Mail, Evri, DPD and fires Twilio notifications on status changes.",
+  "type": "module",
+  "main": "checker.js",
+  "scripts": {
+    "start": "node checker.js",
+    "check": "node checker.js",
+    "logs": "tail -f logs/checker.log"
+  },
+  "keywords": ["pokemon", "topps", "cards", "tracking", "twilio"],
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^16.0.0",
+    "node-fetch": "^3.0.0",
+    "twilio": "^5.0.0"
+  }
+}
