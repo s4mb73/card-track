@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CardTrack Dashboard</title>
+  <link rel="icon" href="data:," />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <div class="brand">CardTrack<span>Dashboard</span></div>
+    <div class="header-right">
+      <span id="loaded-at" class="muted"></span>
+      <button id="refresh">Refresh</button>
+    </div>
+  </header>
+
+  <div id="error" class="banner hidden"></div>
+
+  <section id="summary" class="stats"></section>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab-btn active" data-tab="inventory">Inventory</button>
+    <button class="tab-btn" data-tab="addresses">Addresses</button>
+    <button class="tab-btn" data-tab="notifications">Notifications</button>
+    <button class="tab-btn" data-tab="scheduler">Scheduler</button>
+    <button class="tab-btn" data-tab="email">Email</button>
+  </nav>
+
+  <main>
+    <section class="tab active" id="tab-inventory"></section>
+    <section class="tab" id="tab-addresses"></section>
+    <section class="tab" id="tab-notifications"></section>
+    <section class="tab" id="tab-scheduler"></section>
+    <section class="tab" id="tab-email"></section>
+  </main>
+
+  <footer>
+    Data source: <code>cardtrack/orders.json</code> &middot; updated hourly by GitHub Actions
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
