@@ -222,6 +222,7 @@ td a:hover { text-decoration: underline; }
 }
 
 .person .name { font-size: 16px; font-weight: 700; }
+.person .addr { font-size: 14px; margin-top: 8px; line-height: 1.45; }
 .person .row { font-size: 14px; color: var(--muted); margin-top: 6px; }
 .person .meta {
   margin-top: 12px;

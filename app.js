@@ -54,6 +54,20 @@ function money(amount) {
 function statusLabel(s) { return STATUS_LABELS[s] || s || 'Unknown'; }
 function carrierLabel(c) { return CARRIER_LABELS[c] || c || '—'; }
 
+function addressLines(addr) {
+  if (!addr) return [];
+  return [addr.line1, addr.line2, addr.city, addr.postcode]
+    .map(s => String(s || '').trim())
+    .filter(Boolean);
+}
+
+function shortAddress(addr) {
+  return [addr?.city, addr?.postcode]
+    .map(s => String(s || '').trim())
+    .filter(Boolean)
+    .join(', ');
+}
+
 function badge(status) {
   const key = STATUS_LABELS[status] ? status : 'unknown';
   return `<span class="badge badge-${key}">${esc(statusLabel(status))}</span>`;
@@ -127,10 +141,14 @@ function renderInventory() {
     const trackCell = ref
       ? (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(ref)}</a>` : esc(ref))
       : '<span class="muted">no ref</span>';
+    const dest = shortAddress(o.recipient?.address);
     return `
       <tr>
         <td>${esc(o.item)}</td>
-        <td>${esc(o.recipient?.name)}</td>
+        <td>
+          ${esc(o.recipient?.name)}
+          ${dest ? `<div class="muted">${esc(dest)}</div>` : ''}
+        </td>
         <td>${esc(carrierLabel(o.tracking?.carrier))}</td>
         <td>${badge(o.status)}</td>
         <td>${trackCell}</td>
@@ -150,7 +168,7 @@ function renderInventory() {
       ${filtered.length ? `
         <table>
           <thead>
-            <tr><th>Item</th><th>Recipient</th><th>Carrier</th>
+            <tr><th>Item</th><th>Sending to</th><th>Carrier</th>
                 <th>Status</th><th>Tracking</th><th>Value</th></tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -178,6 +196,7 @@ function renderAddresses() {
         name: r.name || 'Unknown',
         phone: r.phone || '',
         whatsapp: r.whatsapp || '',
+        address: r.address || null,
         orders: [],
         value: 0,
       });
@@ -187,15 +206,22 @@ function renderAddresses() {
     p.value += Number(o.price) || 0;
   }
 
-  const cards = [...people.values()].map(p => `
-    <div class="person">
-      <div class="name">${esc(p.name)}</div>
-      <div class="row">${esc(p.phone || 'no phone')}</div>
-      <div class="row">WhatsApp: ${esc(p.whatsapp || '—')}</div>
-      <div class="meta">${p.orders.length} order(s) &middot; ${esc(money(p.value))}</div>
-      <div class="items">${p.orders.map(esc).join(', ')}</div>
-    </div>
-  `).join('');
+  const cards = [...people.values()].map(p => {
+    const lines = addressLines(p.address);
+    const addrHtml = lines.length
+      ? lines.map(esc).join('<br>')
+      : '<span class="muted">No address on file</span>';
+    return `
+      <div class="person">
+        <div class="name">${esc(p.name)}</div>
+        <div class="addr">${addrHtml}</div>
+        <div class="row">Phone: ${esc(p.phone || '—')}</div>
+        <div class="row">WhatsApp: ${esc(p.whatsapp || '—')}</div>
+        <div class="meta">${p.orders.length} order(s) &middot; ${esc(money(p.value))}</div>
+        <div class="items">${p.orders.map(esc).join(', ')}</div>
+      </div>
+    `;
+  }).join('');
 
   el.innerHTML = `
     <div class="card">

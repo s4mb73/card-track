@@ -7,7 +7,13 @@
       "recipient": {
         "name": "Jamie Wilson",
         "phone": "+447700900123",
-        "whatsapp": ""
+        "whatsapp": "",
+        "address": {
+          "line1": "14 Elm Grove",
+          "line2": "",
+          "city": "Brighton",
+          "postcode": "BN1 4ET"
+        }
       },
       "tracking": {
         "ref": "RM12345678GB",
@@ -26,7 +32,13 @@
       "recipient": {
         "name": "Sam Roberts",
         "phone": "+447700900456",
-        "whatsapp": ""
+        "whatsapp": "",
+        "address": {
+          "line1": "8 Oakfield Road",
+          "line2": "",
+          "city": "Manchester",
+          "postcode": "M14 6XR"
+        }
       },
       "tracking": {
         "ref": "RM67890123GB",
@@ -45,7 +57,13 @@
       "recipient": {
         "name": "Lisa Chen",
         "phone": "+447700900789",
-        "whatsapp": ""
+        "whatsapp": "",
+        "address": {
+          "line1": "Flat 2",
+          "line2": "27 Park Lane",
+          "city": "Leeds",
+          "postcode": "LS1 2TW"
+        }
       },
       "tracking": {
         "ref": "EV112233445566",
@@ -64,7 +82,13 @@
       "recipient": {
         "name": "Sam Roberts",
         "phone": "+447700900456",
-        "whatsapp": ""
+        "whatsapp": "",
+        "address": {
+          "line1": "8 Oakfield Road",
+          "line2": "",
+          "city": "Manchester",
+          "postcode": "M14 6XR"
+        }
       },
       "tracking": {
         "ref": "",
