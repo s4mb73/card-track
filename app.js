@@ -96,6 +96,89 @@ function initials(name) {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
+const RARITY = {
+  common:   { name: 'Common',      grad: 'linear-gradient(135deg, #64748b 0%, #334155 100%)' },
+  uncommon: { name: 'Uncommon',    grad: 'linear-gradient(135deg, #10b981 0%, #047857 100%)' },
+  rare:     { name: 'Rare',        grad: 'linear-gradient(135deg, #3b82f6 0%, #1e40af 100%)' },
+  holo:     { name: 'Holo Rare',   grad: 'linear-gradient(135deg, #a78bfa 0%, #6d28d9 100%)' },
+  secret:   { name: 'Secret Rare', grad: 'linear-gradient(135deg, #fbbf24 0%, #f97316 100%)' },
+};
+
+function rarityFor(price) {
+  const p = Number(price) || 0;
+  if (p < 20)  return { key: 'common',   ...RARITY.common };
+  if (p < 50)  return { key: 'uncommon', ...RARITY.uncommon };
+  if (p < 100) return { key: 'rare',     ...RARITY.rare };
+  if (p < 300) return { key: 'holo',     ...RARITY.holo };
+  return         { key: 'secret',   ...RARITY.secret };
+}
+
+const TIMELINE_STEPS = ['Ordered', 'In transit', 'Out', 'Delivered'];
+const STATUS_STEP = {
+  pending:          1,
+  in_transit:       2,
+  out_for_delivery: 3,
+  delivered:        4,
+  failed:           2,
+  unknown:          0,
+};
+
+function timeline(status) {
+  const cur = STATUS_STEP[status] ?? 0;
+  const failed = status === 'failed';
+  const dotCls = (i) => {
+    if (failed && i === cur) return 'fail';
+    return i <= cur ? 'on' : '';
+  };
+  const lineCls = (i) => (!failed && i < cur) ? 'on' : '';
+  return `
+    <div class="timeline">
+      <div class="dots">
+        <span class="dot ${dotCls(1)}"></span><span class="line ${lineCls(1)}"></span>
+        <span class="dot ${dotCls(2)}"></span><span class="line ${lineCls(2)}"></span>
+        <span class="dot ${dotCls(3)}"></span><span class="line ${lineCls(3)}"></span>
+        <span class="dot ${dotCls(4)}"></span>
+      </div>
+      <div class="labels">
+        ${TIMELINE_STEPS.map((s, i) => {
+          const here = (i + 1) === cur;
+          return `<span class="${here ? 'now' : ''}">${esc(s)}</span>`;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+const ICONS = {
+  package: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
+  money:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
+  truck:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>',
+  check:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
+};
+
+function attachTilt(card) {
+  let raf = null;
+  card.addEventListener('mousemove', (e) => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = null;
+      const r = card.getBoundingClientRect();
+      const x = (e.clientX - r.left) / r.width;
+      const y = (e.clientY - r.top) / r.height;
+      card.style.setProperty('--mx', `${x * 100}%`);
+      card.style.setProperty('--my', `${y * 100}%`);
+      card.style.setProperty('--rx', `${(0.5 - y) * 6}deg`);
+      card.style.setProperty('--ry', `${(x - 0.5) * 8}deg`);
+    });
+  });
+  card.addEventListener('mouseleave', () => {
+    card.style.setProperty('--rx', '0deg');
+    card.style.setProperty('--ry', '0deg');
+    card.style.setProperty('--mx', '50%');
+    card.style.setProperty('--my', '50%');
+  });
+}
+
 function badge(status) {
   const key = STATUS_LABELS[status] ? status : 'unknown';
   return `<span class="badge badge-${key}">${esc(statusLabel(status))}</span>`;
@@ -134,18 +217,24 @@ function renderSummary() {
   const value     = ORDERS.reduce((sum, o) => sum + (Number(o.price) || 0), 0);
   const active    = ORDERS.filter(o => ACTIVE_STATUSES.includes(o.status)).length;
   const delivered = ORDERS.filter(o => o.status === 'delivered').length;
+  const pct       = total ? Math.round((delivered / total) * 100) : 0;
+  const avg       = total ? Math.round(value / total) : 0;
 
   const stats = [
-    { label: 'Total orders', value: total },
-    { label: 'Total value',  value: money(value) },
-    { label: 'Active',       value: active },
-    { label: 'Delivered',    value: delivered },
+    { label: 'Total orders', value: total,         tint: 'violet',  icon: ICONS.package, sub: `${total} card${total === 1 ? '' : 's'} tracked` },
+    { label: 'Total value',  value: money(value),  tint: 'green',   icon: ICONS.money,   sub: `avg ${money(avg)} per card` },
+    { label: 'In flight',    value: active,        tint: 'blue',    icon: ICONS.truck,   sub: `${active} on the move` },
+    { label: 'Delivered',    value: delivered,     tint: 'emerald', icon: ICONS.check,   sub: `${pct}% complete` },
   ];
 
   document.getElementById('summary').innerHTML = stats.map(s => `
-    <div class="stat">
-      <div class="label">${esc(s.label)}</div>
+    <div class="stat" data-tint="${esc(s.tint)}">
+      <div class="stat-top">
+        <span class="label">${esc(s.label)}</span>
+        <span class="stat-icon">${s.icon}</span>
+      </div>
       <div class="value">${esc(s.value)}</div>
+      <div class="sub-stat">${esc(s.sub)}</div>
     </div>
   `).join('');
 }
@@ -170,9 +259,10 @@ function renderInventory() {
       ? (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(ref)}</a>` : esc(ref))
       : '<span class="muted">Waiting for tracking ref</span>';
     const dest = shortAddress(o.recipient?.address);
+    const r = rarityFor(o.price);
     return `
-      <div class="item-card">
-        <div class="strip" style="background: ${gradientFor(o.item)}"></div>
+      <div class="item-card" data-rarity="${esc(r.key)}">
+        <div class="strip" style="background: ${r.grad}"></div>
         <div class="body">
           <div class="title">${esc(o.item)}</div>
           <div class="meta">${esc(carrierLabel(o.tracking?.carrier))} &middot; ${trackHtml}</div>
@@ -180,9 +270,10 @@ function renderInventory() {
             <div class="who">${esc(o.recipient?.name)}</div>
             ${dest ? `<div class="where">${esc(dest)}</div>` : ''}
           </div>
+          ${timeline(o.status)}
           <div class="foot">
-            ${badge(o.status)}
-            <div class="price">${esc(money(o.price))}</div>
+            <span class="rarity">${esc(r.name)}</span>
+            <span class="price">${esc(money(o.price))}</span>
           </div>
         </div>
       </div>
@@ -209,6 +300,8 @@ function renderInventory() {
     inventoryFilter = e.target.value;
     renderInventory();
   });
+
+  el.querySelectorAll('.item-card').forEach(attachTilt);
 }
 
 // ── Addresses ─────────────────────────────────────────────────────────────────
