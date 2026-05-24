@@ -68,6 +68,34 @@ function shortAddress(addr) {
     .join(', ');
 }
 
+const GRADIENTS = [
+  'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
+  'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
+  'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
+  'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
+  'linear-gradient(135deg, #fa709a 0%, #fee140 100%)',
+  'linear-gradient(135deg, #30cfd0 0%, #330867 100%)',
+  'linear-gradient(135deg, #ff9966 0%, #ff5e62 100%)',
+  'linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)',
+];
+
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return Math.abs(h);
+}
+
+function gradientFor(seed) {
+  return GRADIENTS[hashStr(String(seed || '')) % GRADIENTS.length];
+}
+
+function initials(name) {
+  const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return '?';
+  if (parts.length === 1) return parts[0][0].toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
 function badge(status) {
   const key = STATUS_LABELS[status] ? status : 'unknown';
   return `<span class="badge badge-${key}">${esc(statusLabel(status))}</span>`;
@@ -135,46 +163,46 @@ function renderInventory() {
     </option>
   `).join('');
 
-  const rows = filtered.map(o => {
+  const cards = filtered.map(o => {
     const url = safeUrl(o.tracking?.url);
     const ref = o.tracking?.ref || '';
-    const trackCell = ref
+    const trackHtml = ref
       ? (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(ref)}</a>` : esc(ref))
-      : '<span class="muted">no ref</span>';
+      : '<span class="muted">Waiting for tracking ref</span>';
     const dest = shortAddress(o.recipient?.address);
     return `
-      <tr>
-        <td>${esc(o.item)}</td>
-        <td>
-          ${esc(o.recipient?.name)}
-          ${dest ? `<div class="muted">${esc(dest)}</div>` : ''}
-        </td>
-        <td>${esc(carrierLabel(o.tracking?.carrier))}</td>
-        <td>${badge(o.status)}</td>
-        <td>${trackCell}</td>
-        <td>${esc(money(o.price))}</td>
-      </tr>
+      <div class="item-card">
+        <div class="strip" style="background: ${gradientFor(o.item)}"></div>
+        <div class="body">
+          <div class="title">${esc(o.item)}</div>
+          <div class="meta">${esc(carrierLabel(o.tracking?.carrier))} &middot; ${trackHtml}</div>
+          <div class="dest">
+            <div class="who">${esc(o.recipient?.name)}</div>
+            ${dest ? `<div class="where">${esc(dest)}</div>` : ''}
+          </div>
+          <div class="foot">
+            ${badge(o.status)}
+            <div class="price">${esc(money(o.price))}</div>
+          </div>
+        </div>
+      </div>
     `;
   }).join('');
 
   el.innerHTML = `
-    <div class="card">
-      <h2>Inventory</h2>
-      <div class="sub">Every card order and its current tracking status.</div>
+    <div class="section-head">
+      <div>
+        <h2>Inventory</h2>
+        <div class="sub">Every card order and its current tracking status.</div>
+      </div>
       <div class="toolbar">
-        <label class="muted" for="status-filter">Filter</label>
+        <span class="label">Filter</span>
         <select id="status-filter">${options}</select>
       </div>
-      ${filtered.length ? `
-        <table>
-          <thead>
-            <tr><th>Item</th><th>Sending to</th><th>Carrier</th>
-                <th>Status</th><th>Tracking</th><th>Value</th></tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
-      ` : '<div class="empty">No orders match this filter.</div>'}
     </div>
+    ${filtered.length
+      ? `<div class="inventory-grid">${cards}</div>`
+      : '<div class="empty">No orders match this filter.</div>'}
   `;
 
   document.getElementById('status-filter').addEventListener('change', e => {
@@ -213,22 +241,32 @@ function renderAddresses() {
       : '<span class="muted">No address on file</span>';
     return `
       <div class="person">
-        <div class="name">${esc(p.name)}</div>
+        <div class="head">
+          <div class="avatar" style="background: ${gradientFor(p.name)}">${esc(initials(p.name))}</div>
+          <div class="name">${esc(p.name)}</div>
+        </div>
         <div class="addr">${addrHtml}</div>
-        <div class="row">Phone: ${esc(p.phone || '—')}</div>
-        <div class="row">WhatsApp: ${esc(p.whatsapp || '—')}</div>
-        <div class="meta">${p.orders.length} order(s) &middot; ${esc(money(p.value))}</div>
+        <div class="contact">
+          <div><b>Phone</b> &nbsp; ${esc(p.phone || '—')}</div>
+          <div><b>WhatsApp</b> &nbsp; ${esc(p.whatsapp || '—')}</div>
+        </div>
+        <div class="meta">
+          <span>${p.orders.length} order(s)</span>
+          <span><b>${esc(money(p.value))}</b></span>
+        </div>
         <div class="items">${p.orders.map(esc).join(', ')}</div>
       </div>
     `;
   }).join('');
 
   el.innerHTML = `
-    <div class="card">
-      <h2>Addresses</h2>
-      <div class="sub">Recipients these cards are being sent to.</div>
+    <div class="section-head">
+      <div>
+        <h2>Addresses</h2>
+        <div class="sub">Recipients these cards are being sent to.</div>
+      </div>
     </div>
-    ${people.size ? `<div class="grid">${cards}</div>`
+    ${people.size ? `<div class="person-grid">${cards}</div>`
                   : '<div class="empty">No recipients yet.</div>'}
   `;
 }

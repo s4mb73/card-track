@@ -18,23 +18,25 @@
 
   <div id="error" class="banner hidden"></div>
 
-  <section id="summary" class="stats"></section>
+  <div class="container">
+    <section id="summary" class="stats"></section>
 
-  <nav class="tabs" id="tabs">
-    <button class="tab-btn active" data-tab="inventory">Inventory</button>
-    <button class="tab-btn" data-tab="addresses">Addresses</button>
-    <button class="tab-btn" data-tab="notifications">Notifications</button>
-    <button class="tab-btn" data-tab="scheduler">Scheduler</button>
-    <button class="tab-btn" data-tab="email">Email</button>
-  </nav>
+    <nav class="tabs" id="tabs">
+      <button class="tab-btn active" data-tab="inventory">Inventory</button>
+      <button class="tab-btn" data-tab="addresses">Addresses</button>
+      <button class="tab-btn" data-tab="notifications">Notifications</button>
+      <button class="tab-btn" data-tab="scheduler">Scheduler</button>
+      <button class="tab-btn" data-tab="email">Email</button>
+    </nav>
 
-  <main>
-    <section class="tab active" id="tab-inventory"></section>
-    <section class="tab" id="tab-addresses"></section>
-    <section class="tab" id="tab-notifications"></section>
-    <section class="tab" id="tab-scheduler"></section>
-    <section class="tab" id="tab-email"></section>
-  </main>
+    <main>
+      <section class="tab active" id="tab-inventory"></section>
+      <section class="tab" id="tab-addresses"></section>
+      <section class="tab" id="tab-notifications"></section>
+      <section class="tab" id="tab-scheduler"></section>
+      <section class="tab" id="tab-email"></section>
+    </main>
+  </div>
 
   <footer>
     Data source: <code>cardtrack/orders.json</code> &middot; updated hourly by GitHub Actions
