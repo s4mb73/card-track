@@ -3,44 +3,52 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>CardTrack Dashboard</title>
+  <title>CardTrack</title>
   <link rel="icon" href="data:," />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap">
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <header>
-    <div class="brand">CardTrack<span>Dashboard</span></div>
-    <div class="header-right">
-      <span id="loaded-at" class="muted"></span>
-      <button id="refresh">Refresh</button>
+  <aside class="sidebar">
+    <div class="brand">
+      <span class="logo">CT</span>
+      <span class="name">CardTrack</span>
     </div>
-  </header>
-
-  <div id="error" class="banner hidden"></div>
-
-  <div class="container">
-    <section id="summary" class="stats"></section>
-
-    <nav class="tabs" id="tabs">
-      <button class="tab-btn active" data-tab="inventory">Inventory</button>
-      <button class="tab-btn" data-tab="addresses">Addresses</button>
-      <button class="tab-btn" data-tab="notifications">Notifications</button>
-      <button class="tab-btn" data-tab="scheduler">Scheduler</button>
-      <button class="tab-btn" data-tab="email">Email</button>
+    <nav class="nav" id="nav">
+      <button class="nav-btn active" data-tab="inventory">Inventory</button>
+      <button class="nav-btn" data-tab="addresses">Addresses</button>
+      <button class="nav-btn" data-tab="notifications">Notifications</button>
+      <button class="nav-btn" data-tab="scheduler">Scheduler</button>
+      <button class="nav-btn" data-tab="email">Email</button>
     </nav>
+    <div class="sidebar-foot">
+      <span id="loaded-at">Loading…</span>
+    </div>
+  </aside>
 
-    <main>
-      <section class="tab active" id="tab-inventory"></section>
-      <section class="tab" id="tab-addresses"></section>
-      <section class="tab" id="tab-notifications"></section>
-      <section class="tab" id="tab-scheduler"></section>
-      <section class="tab" id="tab-email"></section>
-    </main>
-  </div>
+  <main class="main">
+    <header class="page-head">
+      <div>
+        <h1 id="page-title">Inventory</h1>
+        <p class="page-sub" id="page-sub">Every card order and its current tracking status.</p>
+      </div>
+      <div class="page-actions">
+        <button id="refresh" class="btn-primary">Refresh</button>
+      </div>
+    </header>
 
-  <footer>
-    Data source: <code>cardtrack/orders.json</code> &middot; updated hourly by GitHub Actions
-  </footer>
+    <div id="error" class="banner hidden"></div>
+
+    <section id="summary" class="kpi-row"></section>
+
+    <section class="tab active" id="tab-inventory"></section>
+    <section class="tab" id="tab-addresses"></section>
+    <section class="tab" id="tab-notifications"></section>
+    <section class="tab" id="tab-scheduler"></section>
+    <section class="tab" id="tab-email"></section>
+  </main>
 
   <script src="app.js"></script>
 </body>

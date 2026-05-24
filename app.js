@@ -1,7 +1,7 @@
 /**
  * app.js
  * CardTrack dashboard — a static single-page UI that reads cardtrack/orders.json
- * and renders Inventory, Addresses, Notifications, Scheduler and Email tabs.
+ * and renders Inventory, Addresses, Notifications, Scheduler and Email views.
  * No build step, no framework: served straight from the repo root by Vercel.
  */
 
@@ -33,6 +33,22 @@ const EMAIL_SOURCES   = [
   'ebay@ebay.co.uk',
 ];
 
+const NAV_ICONS = {
+  inventory:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5l6-3 6 3v7l-6 3-6-3v-7z"/><path d="M2 4.5l6 3 6-3"/><path d="M8 7.5v7"/></svg>',
+  addresses:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="2.75"/><path d="M2.5 14c0-2.7 2.5-5 5.5-5s5.5 2.3 5.5 5"/></svg>',
+  notifications: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5a5 5 0 1 1 10 0v3l1 2H2l1-2v-3z"/><path d="M6.5 13a1.5 1.5 0 0 0 3 0"/></svg>',
+  scheduler:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.5"/></svg>',
+  email:         '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M2.5 5l5.5 4 5.5-4"/></svg>',
+};
+
+const TAB_META = {
+  inventory:     { title: 'Inventory',     sub: 'Every card order and its current tracking status.' },
+  addresses:     { title: 'Addresses',     sub: 'Recipients these cards are being sent to.' },
+  notifications: { title: 'Notifications', sub: 'Who has been notified, and what is queued for the next check.' },
+  scheduler:     { title: 'Scheduler',     sub: 'How often the checker polls each carrier.' },
+  email:         { title: 'Email',         sub: 'Ingest order confirmations from your inbox.' },
+};
+
 let ORDERS = [];
 let inventoryFilter = 'all';
 
@@ -51,7 +67,7 @@ function money(amount) {
   return '£' + Number(amount || 0).toLocaleString('en-GB');
 }
 
-function statusLabel(s) { return STATUS_LABELS[s] || s || 'Unknown'; }
+function statusLabel(s)  { return STATUS_LABELS[s] || s || 'Unknown'; }
 function carrierLabel(c) { return CARRIER_LABELS[c] || c || '—'; }
 
 function addressLines(addr) {
@@ -68,120 +84,11 @@ function shortAddress(addr) {
     .join(', ');
 }
 
-const GRADIENTS = [
-  'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
-  'linear-gradient(135deg, #f093fb 0%, #f5576c 100%)',
-  'linear-gradient(135deg, #4facfe 0%, #00f2fe 100%)',
-  'linear-gradient(135deg, #43e97b 0%, #38f9d7 100%)',
-  'linear-gradient(135deg, #fa709a 0%, #fee140 100%)',
-  'linear-gradient(135deg, #30cfd0 0%, #330867 100%)',
-  'linear-gradient(135deg, #ff9966 0%, #ff5e62 100%)',
-  'linear-gradient(135deg, #a18cd1 0%, #fbc2eb 100%)',
-];
-
-function hashStr(s) {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
-  return Math.abs(h);
-}
-
-function gradientFor(seed) {
-  return GRADIENTS[hashStr(String(seed || '')) % GRADIENTS.length];
-}
-
 function initials(name) {
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '?';
   if (parts.length === 1) return parts[0][0].toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-
-const RARITY = {
-  common:   { name: 'Common',      grad: 'linear-gradient(135deg, #64748b 0%, #334155 100%)' },
-  uncommon: { name: 'Uncommon',    grad: 'linear-gradient(135deg, #10b981 0%, #047857 100%)' },
-  rare:     { name: 'Rare',        grad: 'linear-gradient(135deg, #3b82f6 0%, #1e40af 100%)' },
-  holo:     { name: 'Holo Rare',   grad: 'linear-gradient(135deg, #a78bfa 0%, #6d28d9 100%)' },
-  secret:   { name: 'Secret Rare', grad: 'linear-gradient(135deg, #fbbf24 0%, #f97316 100%)' },
-};
-
-function rarityFor(price) {
-  const p = Number(price) || 0;
-  if (p < 20)  return { key: 'common',   ...RARITY.common };
-  if (p < 50)  return { key: 'uncommon', ...RARITY.uncommon };
-  if (p < 100) return { key: 'rare',     ...RARITY.rare };
-  if (p < 300) return { key: 'holo',     ...RARITY.holo };
-  return         { key: 'secret',   ...RARITY.secret };
-}
-
-const TIMELINE_STEPS = ['Ordered', 'In transit', 'Out', 'Delivered'];
-const STATUS_STEP = {
-  pending:          1,
-  in_transit:       2,
-  out_for_delivery: 3,
-  delivered:        4,
-  failed:           2,
-  unknown:          0,
-};
-
-function timeline(status) {
-  const cur = STATUS_STEP[status] ?? 0;
-  const failed = status === 'failed';
-  const dotCls = (i) => {
-    if (failed && i === cur) return 'fail';
-    return i <= cur ? 'on' : '';
-  };
-  const lineCls = (i) => (!failed && i < cur) ? 'on' : '';
-  return `
-    <div class="timeline">
-      <div class="dots">
-        <span class="dot ${dotCls(1)}"></span><span class="line ${lineCls(1)}"></span>
-        <span class="dot ${dotCls(2)}"></span><span class="line ${lineCls(2)}"></span>
-        <span class="dot ${dotCls(3)}"></span><span class="line ${lineCls(3)}"></span>
-        <span class="dot ${dotCls(4)}"></span>
-      </div>
-      <div class="labels">
-        ${TIMELINE_STEPS.map((s, i) => {
-          const here = (i + 1) === cur;
-          return `<span class="${here ? 'now' : ''}">${esc(s)}</span>`;
-        }).join('')}
-      </div>
-    </div>
-  `;
-}
-
-const ICONS = {
-  package: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16.5 9.4l-9-5.19M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><polyline points="3.27 6.96 12 12.01 20.73 6.96"/><line x1="12" y1="22.08" x2="12" y2="12"/></svg>',
-  money:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>',
-  truck:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="3" width="15" height="13"/><polygon points="16 8 20 8 23 11 23 16 16 16 16 8"/><circle cx="5.5" cy="18.5" r="2.5"/><circle cx="18.5" cy="18.5" r="2.5"/></svg>',
-  check:   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
-};
-
-function attachTilt(card) {
-  let raf = null;
-  card.addEventListener('mousemove', (e) => {
-    if (raf) return;
-    raf = requestAnimationFrame(() => {
-      raf = null;
-      const r = card.getBoundingClientRect();
-      const x = (e.clientX - r.left) / r.width;
-      const y = (e.clientY - r.top) / r.height;
-      card.style.setProperty('--mx', `${x * 100}%`);
-      card.style.setProperty('--my', `${y * 100}%`);
-      card.style.setProperty('--rx', `${(0.5 - y) * 6}deg`);
-      card.style.setProperty('--ry', `${(x - 0.5) * 8}deg`);
-    });
-  });
-  card.addEventListener('mouseleave', () => {
-    card.style.setProperty('--rx', '0deg');
-    card.style.setProperty('--ry', '0deg');
-    card.style.setProperty('--mx', '50%');
-    card.style.setProperty('--my', '50%');
-  });
-}
-
-function badge(status) {
-  const key = STATUS_LABELS[status] ? status : 'unknown';
-  return `<span class="badge badge-${key}">${esc(statusLabel(status))}</span>`;
 }
 
 function relTime(iso) {
@@ -203,7 +110,11 @@ function nextHourlyRun() {
   return d.toLocaleString('en-GB');
 }
 
-// ── Data loading ──────────────────────────────────────────────────────────────
+function statusCell(s) {
+  return `<span class="status status-${esc(s)}"><span class="sd"></span>${esc(statusLabel(s))}</span>`;
+}
+
+// ── Data ──────────────────────────────────────────────────────────────────────
 async function loadOrders() {
   const res = await fetch(ORDERS_URL, { cache: 'no-store' });
   if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${ORDERS_URL}`);
@@ -211,35 +122,29 @@ async function loadOrders() {
   ORDERS = Array.isArray(data.orders) ? data.orders : [];
 }
 
-// ── Summary ───────────────────────────────────────────────────────────────────
+// ── KPI tiles ─────────────────────────────────────────────────────────────────
 function renderSummary() {
   const total     = ORDERS.length;
-  const value     = ORDERS.reduce((sum, o) => sum + (Number(o.price) || 0), 0);
+  const value     = ORDERS.reduce((s, o) => s + (Number(o.price) || 0), 0);
   const active    = ORDERS.filter(o => ACTIVE_STATUSES.includes(o.status)).length;
   const delivered = ORDERS.filter(o => o.status === 'delivered').length;
-  const pct       = total ? Math.round((delivered / total) * 100) : 0;
-  const avg       = total ? Math.round(value / total) : 0;
 
-  const stats = [
-    { label: 'Total orders', value: total,         tint: 'violet',  icon: ICONS.package, sub: `${total} card${total === 1 ? '' : 's'} tracked` },
-    { label: 'Total value',  value: money(value),  tint: 'green',   icon: ICONS.money,   sub: `avg ${money(avg)} per card` },
-    { label: 'In flight',    value: active,        tint: 'blue',    icon: ICONS.truck,   sub: `${active} on the move` },
-    { label: 'Delivered',    value: delivered,     tint: 'emerald', icon: ICONS.check,   sub: `${pct}% complete` },
+  const tiles = [
+    { label: 'Total orders',  value: total,        tint: 'purple' },
+    { label: 'Total value',   value: money(value), tint: 'green'  },
+    { label: 'In transit',    value: active,       tint: 'blue'   },
+    { label: 'Delivered',     value: delivered,    tint: 'amber'  },
   ];
 
-  document.getElementById('summary').innerHTML = stats.map(s => `
-    <div class="stat" data-tint="${esc(s.tint)}">
-      <div class="stat-top">
-        <span class="label">${esc(s.label)}</span>
-        <span class="stat-icon">${s.icon}</span>
-      </div>
-      <div class="value">${esc(s.value)}</div>
-      <div class="sub-stat">${esc(s.sub)}</div>
+  document.getElementById('summary').innerHTML = tiles.map(t => `
+    <div class="kpi" data-tint="${esc(t.tint)}">
+      <div class="label"><span class="dot"></span>${esc(t.label)}</div>
+      <div class="value">${esc(t.value)}</div>
     </div>
   `).join('');
 }
 
-// ── Inventory ─────────────────────────────────────────────────────────────────
+// ── Inventory (table) ─────────────────────────────────────────────────────────
 function renderInventory() {
   const el = document.getElementById('tab-inventory');
   const filtered = inventoryFilter === 'all'
@@ -252,56 +157,57 @@ function renderInventory() {
     </option>
   `).join('');
 
-  const cards = filtered.map(o => {
+  const rows = filtered.map(o => {
     const url = safeUrl(o.tracking?.url);
     const ref = o.tracking?.ref || '';
     const trackHtml = ref
-      ? (url ? `<a href="${esc(url)}" target="_blank" rel="noopener">${esc(ref)}</a>` : esc(ref))
-      : '<span class="muted">Waiting for tracking ref</span>';
+      ? (url
+          ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="mono">${esc(ref)}</a>`
+          : `<span class="mono">${esc(ref)}</span>`)
+      : '<span class="muted">—</span>';
     const dest = shortAddress(o.recipient?.address);
-    const r = rarityFor(o.price);
     return `
-      <div class="item-card" data-rarity="${esc(r.key)}">
-        <div class="strip" style="background: ${r.grad}"></div>
-        <div class="body">
-          <div class="title">${esc(o.item)}</div>
-          <div class="meta">${esc(carrierLabel(o.tracking?.carrier))} &middot; ${trackHtml}</div>
-          <div class="dest">
-            <div class="who">${esc(o.recipient?.name)}</div>
-            ${dest ? `<div class="where">${esc(dest)}</div>` : ''}
-          </div>
-          ${timeline(o.status)}
-          <div class="foot">
-            <span class="rarity">${esc(r.name)}</span>
-            <span class="price">${esc(money(o.price))}</span>
-          </div>
-        </div>
-      </div>
+      <tr>
+        <td><div class="primary">${esc(o.item)}</div></td>
+        <td>
+          ${esc(o.recipient?.name)}
+          ${dest ? `<span class="muted">${esc(dest)}</span>` : ''}
+        </td>
+        <td>${esc(carrierLabel(o.tracking?.carrier))}</td>
+        <td>${statusCell(o.status)}</td>
+        <td>${trackHtml}</td>
+        <td class="num">${esc(money(o.price))}</td>
+      </tr>
     `;
   }).join('');
 
   el.innerHTML = `
-    <div class="section-head">
-      <div>
-        <h2>Inventory</h2>
-        <div class="sub">Every card order and its current tracking status.</div>
+    <div class="section">
+      <div class="section-head">
+        <div>
+          <h2>Orders</h2>
+          <div class="sub">${filtered.length} of ${ORDERS.length} order${ORDERS.length === 1 ? '' : 's'}</div>
+        </div>
+        <div class="toolbar">
+          <select id="status-filter">${options}</select>
+        </div>
       </div>
-      <div class="toolbar">
-        <span class="label">Filter</span>
-        <select id="status-filter">${options}</select>
-      </div>
+      ${filtered.length ? `
+        <table>
+          <thead>
+            <tr><th>Item</th><th>Sending to</th><th>Carrier</th>
+                <th>Status</th><th>Tracking</th><th>Value</th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      ` : '<div class="empty">No orders match this filter.</div>'}
     </div>
-    ${filtered.length
-      ? `<div class="inventory-grid">${cards}</div>`
-      : '<div class="empty">No orders match this filter.</div>'}
   `;
 
   document.getElementById('status-filter').addEventListener('change', e => {
     inventoryFilter = e.target.value;
     renderInventory();
   });
-
-  el.querySelectorAll('.item-card').forEach(attachTilt);
 }
 
 // ── Addresses ─────────────────────────────────────────────────────────────────
@@ -335,33 +241,26 @@ function renderAddresses() {
     return `
       <div class="person">
         <div class="head">
-          <div class="avatar" style="background: ${gradientFor(p.name)}">${esc(initials(p.name))}</div>
+          <div class="avatar">${esc(initials(p.name))}</div>
           <div class="name">${esc(p.name)}</div>
         </div>
         <div class="addr">${addrHtml}</div>
         <div class="contact">
-          <div><b>Phone</b> &nbsp; ${esc(p.phone || '—')}</div>
-          <div><b>WhatsApp</b> &nbsp; ${esc(p.whatsapp || '—')}</div>
+          <div><b>Phone</b>${esc(p.phone || '—')}</div>
+          <div><b>WhatsApp</b>${esc(p.whatsapp || '—')}</div>
         </div>
         <div class="meta">
-          <span>${p.orders.length} order(s)</span>
-          <span><b>${esc(money(p.value))}</b></span>
+          <span>${p.orders.length} order${p.orders.length === 1 ? '' : 's'}</span>
+          <b>${esc(money(p.value))}</b>
         </div>
         <div class="items">${p.orders.map(esc).join(', ')}</div>
       </div>
     `;
   }).join('');
 
-  el.innerHTML = `
-    <div class="section-head">
-      <div>
-        <h2>Addresses</h2>
-        <div class="sub">Recipients these cards are being sent to.</div>
-      </div>
-    </div>
-    ${people.size ? `<div class="person-grid">${cards}</div>`
-                  : '<div class="empty">No recipients yet.</div>'}
-  `;
+  el.innerHTML = people.size
+    ? `<div class="person-grid">${cards}</div>`
+    : '<div class="empty">No recipients yet.</div>';
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────────
@@ -381,28 +280,27 @@ function renderNotifications() {
     const st = states[i];
     return `
       <tr>
-        <td>${esc(o.recipient?.name)}</td>
+        <td><div class="primary">${esc(o.recipient?.name)}</div></td>
         <td>${esc(o.item)}</td>
-        <td>${badge(o.status)}</td>
-        <td>${o.lastNotified ? esc(statusLabel(o.lastNotified)) : '<span class="muted">never</span>'}</td>
+        <td>${statusCell(o.status)}</td>
+        <td>${o.lastNotified ? esc(statusLabel(o.lastNotified)) : '<span class="muted">Never</span>'}</td>
         <td><span class="pill ${st.cls}">${esc(st.label)}</span></td>
       </tr>
     `;
   }).join('');
 
   el.innerHTML = `
-    <div class="card">
-      <h2>Notifications</h2>
-      <div class="sub">
-        ${sent} sent &middot; ${queued} queued for the next check.
-        Reflects current state — full send history lives in <code>logs/checker.log</code>.
+    <div class="section">
+      <div class="section-head">
+        <div>
+          <h2>Notification history</h2>
+          <div class="sub">${sent} sent &middot; ${queued} queued for the next check</div>
+        </div>
       </div>
       ${ORDERS.length ? `
         <table>
-          <thead>
-            <tr><th>Recipient</th><th>Item</th><th>Status</th>
-                <th>Last notified</th><th>State</th></tr>
-          </thead>
+          <thead><tr><th>Recipient</th><th>Item</th><th>Status</th>
+              <th>Last notified</th><th>State</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       ` : '<div class="empty">No orders to notify on.</div>'}
@@ -421,30 +319,28 @@ function renderScheduler() {
     else if (!o.lastChecked) note = '<span class="pill muted">never checked</span>';
     return `
       <tr>
-        <td>${esc(o.item)}</td>
-        <td>${badge(o.status)}</td>
-        <td>${esc(relTime(o.lastChecked))}</td>
+        <td><div class="primary">${esc(o.item)}</div></td>
+        <td>${statusCell(o.status)}</td>
+        <td class="num">${esc(relTime(o.lastChecked))}</td>
         <td>${note}</td>
       </tr>
     `;
   }).join('');
 
   el.innerHTML = `
-    <div class="card">
-      <h2>Scheduler</h2>
-      <div class="sub">The checker runs automatically on a fixed schedule.</div>
-      <div class="info-row"><span class="k">Schedule</span>
-        <span>Hourly &middot; <code>cron 0 * * * *</code></span></div>
-      <div class="info-row"><span class="k">Runner</span>
-        <span>GitHub Actions (<code>.github/workflows/checker.yml</code>)</span></div>
-      <div class="info-row"><span class="k">Active orders next run</span>
-        <span>${active.length}</span></div>
-      <div class="info-row"><span class="k">Estimated next run</span>
-        <span>${esc(nextHourlyRun())}</span></div>
+    <div class="section">
+      <div class="section-head">
+        <div><h2>Schedule</h2><div class="sub">How often the checker polls each carrier.</div></div>
+      </div>
+      <div class="info-row"><span class="k">Frequency</span><span>Hourly &middot; <code>0 * * * *</code></span></div>
+      <div class="info-row"><span class="k">Runner</span><span>GitHub Actions &middot; <code>.github/workflows/checker.yml</code></span></div>
+      <div class="info-row"><span class="k">Active orders next run</span><span class="num">${active.length}</span></div>
+      <div class="info-row"><span class="k">Estimated next run</span><span class="num">${esc(nextHourlyRun())}</span></div>
     </div>
-    <div class="card">
-      <h2>Last checked</h2>
-      <div class="sub">When each order was last polled.</div>
+    <div class="section">
+      <div class="section-head">
+        <div><h2>Last checked</h2><div class="sub">When each order was last polled.</div></div>
+      </div>
       ${ORDERS.length ? `
         <table>
           <thead><tr><th>Item</th><th>Status</th><th>Last checked</th><th></th></tr></thead>
@@ -457,39 +353,45 @@ function renderScheduler() {
 
 // ── Email ─────────────────────────────────────────────────────────────────────
 function renderEmail() {
-  const el = document.getElementById('tab-email');
-  el.innerHTML = `
-    <div class="card">
-      <h2>Email ingestion</h2>
-      <div class="sub">Automatically turn order confirmation emails into tracked orders.</div>
-      <div class="info-row"><span class="k">Status</span>
-        <span class="pill muted">Not connected</span></div>
-      <p class="muted" style="margin-top:14px">
-        Orders are currently added manually to <code>cardtrack/orders.json</code>.
-        Email ingestion (a Gmail scraper) is not yet set up. Once connected, order
-        confirmations and shipping notices from these senders would be parsed into
-        new orders automatically:
-      </p>
-      <ul class="sources">
-        ${EMAIL_SOURCES.map(s => `<li><code>${esc(s)}</code></li>`).join('')}
-      </ul>
+  document.getElementById('tab-email').innerHTML = `
+    <div class="section">
+      <div class="section-head">
+        <div><h2>Email ingestion</h2><div class="sub">Auto-import orders from your inbox.</div></div>
+      </div>
+      <div class="info-row"><span class="k">Status</span><span class="pill muted">Not connected</span></div>
+      <div class="section-body">
+        <p style="color: var(--text-muted); margin-bottom: 12px; font-size: 13.5px;">
+          Once connected, order confirmations from these senders would create new
+          orders in <code>cardtrack/orders.json</code> automatically.
+        </p>
+        <ul class="sources">
+          ${EMAIL_SOURCES.map(s => `<li>${esc(s)}</li>`).join('')}
+        </ul>
+      </div>
     </div>
   `;
 }
 
-// ── Tabs ──────────────────────────────────────────────────────────────────────
-function setupTabs() {
-  document.getElementById('tabs').addEventListener('click', e => {
-    const btn = e.target.closest('.tab-btn');
+// ── Nav & tabs ────────────────────────────────────────────────────────────────
+function setupNav() {
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    const tab = btn.dataset.tab;
+    btn.insertAdjacentHTML('afterbegin', `<span class="nav-ico">${NAV_ICONS[tab] || ''}</span>`);
+  });
+
+  document.getElementById('nav').addEventListener('click', e => {
+    const btn = e.target.closest('.nav-btn');
     if (!btn) return;
-    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-    btn.classList.add('active');
-    document.getElementById(`tab-${btn.dataset.tab}`).classList.add('active');
+    const tab = btn.dataset.tab;
+    document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b === btn));
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === `tab-${tab}`));
+    const meta = TAB_META[tab] || {};
+    document.getElementById('page-title').textContent = meta.title || '';
+    document.getElementById('page-sub').textContent = meta.sub || '';
   });
 }
 
-// ── Render everything ─────────────────────────────────────────────────────────
+// ── Render all ────────────────────────────────────────────────────────────────
 function renderAll() {
   renderSummary();
   renderInventory();
@@ -506,13 +408,13 @@ async function refresh() {
     errEl.classList.add('hidden');
     renderAll();
     document.getElementById('loaded-at').textContent =
-      `Loaded ${new Date().toLocaleTimeString('en-GB')}`;
+      `Updated ${new Date().toLocaleTimeString('en-GB')}`;
   } catch (err) {
     errEl.textContent = `Could not load orders: ${err.message}`;
     errEl.classList.remove('hidden');
   }
 }
 
-setupTabs();
+setupNav();
 document.getElementById('refresh').addEventListener('click', refresh);
 refresh();
