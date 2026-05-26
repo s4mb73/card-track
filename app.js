@@ -1,9 +1,7 @@
 /**
  * app.js
- * CardTrack dashboard — Supabase-backed.
- * Reads `addresses` and `inventory` tables via the public anon key.
- * Writes happen server-side via the service-role key in checker.js;
- * here we only read.
+ * CardTrack dashboard — Supabase-backed, with auth + CRUD.
+ * Reads `addresses` and `inventory`; writes require sign-in.
  */
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -31,13 +29,12 @@ const CARRIER_LABELS = {
   parcelforce: 'ParcelForce',
 };
 
+const SALE_STATUSES = ['holding', 'listed', 'sold', 'refunded'];
+const ACQ_STATUSES  = ['pending', 'in_transit', 'out_for_delivery', 'delivered', 'failed'];
 const NOTIFY_TRIGGERS = ['in_transit', 'out_for_delivery', 'delivered', 'failed'];
 const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
 const EMAIL_SOURCES   = [
-  'orders@topps.com',
-  'noreply@pokemoncenter.com',
-  'orders@aycd.io',
-  'ebay@ebay.co.uk',
+  'orders@topps.com', 'noreply@pokemoncenter.com', 'orders@aycd.io', 'ebay@ebay.co.uk',
 ];
 
 const NAV_ICONS = {
@@ -59,87 +56,71 @@ const TAB_META = {
 let ITEMS = [];
 let ADDRESSES = [];
 let ADDRESS_MAP = new Map();
+let AUTH_USER = null;
 let inventoryFilter = 'all';
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Generic helpers ───────────────────────────────────────────────────────────
 function esc(value) {
   return String(value ?? '').replace(/[&<>"']/g, ch => ({
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
   }[ch]));
 }
-
-function safeUrl(url) {
-  return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : '';
-}
-
+function safeUrl(url) { return typeof url === 'string' && /^https?:\/\//i.test(url) ? url : ''; }
 function money(amount) {
   const n = Number(amount || 0);
-  const sign = n < 0 ? '-' : '';
-  return sign + '£' + Math.abs(n).toLocaleString('en-GB');
+  return (n < 0 ? '-' : '') + '£' + Math.abs(n).toLocaleString('en-GB');
 }
-
 function statusLabel(s)  { return STATUS_LABELS[s] || s || 'Unknown'; }
 function carrierLabel(c) { return CARRIER_LABELS[c] || c || '—'; }
-
 function addressLines(addr) {
   if (!addr) return [];
   return [addr.line1, addr.line2, addr.line3, addr.town_city, addr.county, addr.postcode]
-    .map(s => String(s || '').trim())
-    .filter(Boolean);
+    .map(s => String(s || '').trim()).filter(Boolean);
 }
-
 function shortAddress(addr) {
-  return [addr?.town_city, addr?.postcode]
-    .map(s => String(s || '').trim())
-    .filter(Boolean)
-    .join(', ');
+  return [addr?.town_city, addr?.postcode].map(s => String(s || '').trim()).filter(Boolean).join(', ');
 }
-
 function initials(name) {
   const parts = String(name || '').trim().split(/\s+/).filter(Boolean);
   if (!parts.length) return '?';
   if (parts.length === 1) return parts[0][0].toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
-
 function relTime(iso) {
   if (!iso) return '—';
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return '—';
   const mins = Math.round((Date.now() - t) / 60000);
-  if (mins < 1)  return 'just now';
+  if (mins < 1) return 'just now';
   if (mins < 60) return `${mins}m ago`;
   const hrs = Math.round(mins / 60);
-  if (hrs < 24)  return `${hrs}h ago`;
+  if (hrs < 24) return `${hrs}h ago`;
   return `${Math.round(hrs / 24)}d ago`;
 }
-
 function nextHourlyRun() {
-  const d = new Date();
-  d.setMinutes(0, 0, 0);
-  d.setHours(d.getHours() + 1);
+  const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
   return d.toLocaleString('en-GB');
 }
-
 function statusCell(s) {
   return `<span class="status status-${esc(s)}"><span class="sd"></span>${esc(statusLabel(s))}</span>`;
 }
-
 function effectiveStatus(item) {
   return item.sale_status === 'sold' ? 'sold' : item.acquisition_status;
 }
-
 function profitOf(item) {
   if (item.sale_status !== 'sold') return null;
-  const sale    = Number(item.sale_price)         || 0;
-  const cost    = Number(item.cost)               || 0;
-  const fees    = Number(item.fees)               || 0;
-  const shipIn  = Number(item.shipping_in_cost)   || 0;
-  const shipOut = Number(item.shipping_out_cost)  || 0;
+  const sale = Number(item.sale_price) || 0;
+  const cost = Number(item.cost) || 0;
+  const fees = Number(item.fees) || 0;
+  const shipIn  = Number(item.shipping_in_cost)  || 0;
+  const shipOut = Number(item.shipping_out_cost) || 0;
   return sale - cost - fees - shipIn - shipOut;
 }
+function newId(prefix) {
+  return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
+}
 
-// ── Data ──────────────────────────────────────────────────────────────────────
+// ── Data loading ──────────────────────────────────────────────────────────────
 async function loadData() {
   const [invRes, addrRes] = await Promise.all([
     supabase.from('inventory').select('*').order('id'),
@@ -161,10 +142,10 @@ function renderSummary() {
   const profit = sold.reduce((s, i) => s + (profitOf(i) || 0), 0);
 
   const tiles = [
-    { label: 'Items',      value: total,        tint: 'purple' },
-    { label: 'Spent',      value: money(spent), tint: 'green'  },
-    { label: 'In transit', value: active,       tint: 'blue'   },
-    { label: 'Profit',     value: money(profit), tint: 'amber' },
+    { label: 'Items',      value: total,         tint: 'purple' },
+    { label: 'Spent',      value: money(spent),  tint: 'green'  },
+    { label: 'In transit', value: active,        tint: 'blue'   },
+    { label: 'Profit',     value: money(profit), tint: 'amber'  },
   ];
 
   document.getElementById('summary').innerHTML = tiles.map(t => `
@@ -180,17 +161,11 @@ function renderInventory() {
   const el = document.getElementById('tab-inventory');
 
   let filtered;
-  if (inventoryFilter === 'all') {
-    filtered = ITEMS;
-  } else if (inventoryFilter === 'sold') {
-    filtered = ITEMS.filter(i => i.sale_status === 'sold');
-  } else {
-    filtered = ITEMS.filter(i => i.acquisition_status === inventoryFilter
-                              && i.sale_status !== 'sold');
-  }
+  if (inventoryFilter === 'all')        filtered = ITEMS;
+  else if (inventoryFilter === 'sold')  filtered = ITEMS.filter(i => i.sale_status === 'sold');
+  else filtered = ITEMS.filter(i => i.acquisition_status === inventoryFilter && i.sale_status !== 'sold');
 
-  const FILTER_KEYS = ['all', 'pending', 'in_transit', 'out_for_delivery',
-                       'delivered', 'failed', 'sold'];
+  const FILTER_KEYS = ['all', ...ACQ_STATUSES, 'sold'];
   const options = FILTER_KEYS.map(k => `
     <option value="${esc(k)}" ${k === inventoryFilter ? 'selected' : ''}>
       ${k === 'all' ? 'All statuses' : esc(statusLabel(k))}
@@ -198,24 +173,22 @@ function renderInventory() {
   `).join('');
 
   const rows = filtered.map(item => {
-    const url  = safeUrl(item.tracking_url);
-    const ref  = item.tracking_ref || '';
+    const url = safeUrl(item.tracking_url);
+    const ref = item.tracking_ref || '';
     const trackHtml = ref
       ? (url
-          ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="mono">${esc(ref)}</a>`
+          ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="mono" data-stop>${esc(ref)}</a>`
           : `<span class="mono">${esc(ref)}</span>`)
       : '<span class="muted">—</span>';
-
-    const addr = ADDRESS_MAP.get(item.recipient_address_id);
+    const addr     = ADDRESS_MAP.get(item.recipient_address_id);
     const destName = addr?.full_name || '—';
     const destLoc  = shortAddress(addr);
     const status   = effectiveStatus(item);
     const profit   = profitOf(item);
-
-    const subLine = [item.category, item.set_edition].filter(Boolean).map(esc).join(' · ');
+    const subLine  = [item.category, item.set_edition].filter(Boolean).map(esc).join(' · ');
 
     return `
-      <tr>
+      <tr data-kind="inv" data-id="${esc(item.id)}">
         <td>
           <div class="primary">${esc(item.item)}</div>
           ${subLine ? `<span class="muted">${subLine}</span>` : ''}
@@ -244,10 +217,11 @@ function renderInventory() {
         </div>
         <div class="toolbar">
           <select id="status-filter">${options}</select>
+          ${AUTH_USER ? '<button class="btn-primary btn-add" id="add-inv">+ Add item</button>' : ''}
         </div>
       </div>
       ${filtered.length ? `
-        <table>
+        <table class="${AUTH_USER ? 'row-clickable' : ''}">
           <thead>
             <tr><th>Item</th><th>Sending to</th><th>Carrier</th>
                 <th>Status</th><th>Tracking</th><th>Cost</th><th>Profit</th></tr>
@@ -262,6 +236,16 @@ function renderInventory() {
     inventoryFilter = e.target.value;
     renderInventory();
   });
+  if (AUTH_USER) {
+    document.getElementById('add-inv').addEventListener('click', () => openInventoryEditor());
+    el.querySelectorAll('tbody tr').forEach(tr => {
+      tr.addEventListener('click', e => {
+        if (e.target.closest('[data-stop]')) return;
+        const item = ITEMS.find(i => i.id === tr.dataset.id);
+        if (item) openInventoryEditor(item);
+      });
+    });
+  }
 }
 
 // ── Addresses ─────────────────────────────────────────────────────────────────
@@ -272,13 +256,11 @@ function renderAddresses() {
     const myItems   = ITEMS.filter(i => i.recipient_address_id === a.id);
     const totalCost = myItems.reduce((s, i) => s + (Number(i.cost) || 0), 0);
     const lines     = addressLines(a);
-    const addrHtml  = lines.length
-      ? lines.map(esc).join('<br>')
-      : '<span class="muted">No address on file</span>';
+    const addrHtml  = lines.length ? lines.map(esc).join('<br>') : '<span class="muted">No address on file</span>';
     const channel   = (a.preferred_channel || 'sms').toLowerCase();
 
     return `
-      <div class="person">
+      <div class="person ${AUTH_USER ? 'clickable' : ''}" data-kind="addr" data-id="${esc(a.id)}">
         <div class="head">
           <div class="avatar">${esc(initials(a.full_name))}</div>
           <div class="head-meta">
@@ -288,7 +270,7 @@ function renderAddresses() {
         </div>
         <div class="addr">${addrHtml}</div>
         <div class="contact">
-          ${a.email     ? `<div><b>Email</b>${esc(a.email)}</div>` : ''}
+          ${a.email ? `<div><b>Email</b>${esc(a.email)}</div>` : ''}
           <div><b>Phone</b>${esc(a.phone || '—')}</div>
           <div><b>WhatsApp</b>${esc(a.whatsapp || '—')}</div>
           <div><b>Prefers</b><span class="channel-tag">${esc(channel.toUpperCase())}</span></div>
@@ -302,9 +284,25 @@ function renderAddresses() {
     `;
   }).join('');
 
-  el.innerHTML = ADDRESSES.length
-    ? `<div class="person-grid">${cards}</div>`
-    : '<div class="empty">No addresses yet.</div>';
+  el.innerHTML = `
+    <div class="section-head-bare">
+      ${AUTH_USER ? '<button class="btn-primary btn-add" id="add-addr">+ Add address</button>' : ''}
+    </div>
+    ${ADDRESSES.length
+      ? `<div class="person-grid">${cards}</div>`
+      : '<div class="empty">No addresses yet.</div>'}
+  `;
+
+  if (AUTH_USER) {
+    const addBtn = document.getElementById('add-addr');
+    if (addBtn) addBtn.addEventListener('click', () => openAddressEditor());
+    el.querySelectorAll('.person').forEach(p => {
+      p.addEventListener('click', () => {
+        const a = ADDRESSES.find(x => x.id === p.dataset.id);
+        if (a) openAddressEditor(a);
+      });
+    });
+  }
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────────
@@ -313,13 +311,11 @@ function notifyState(item) {
   if (item.last_notified === item.acquisition_status)     return { label: 'Sent',     cls: 'ok' };
   return { label: 'Queued', cls: 'warn' };
 }
-
 function renderNotifications() {
   const el = document.getElementById('tab-notifications');
   const states = ITEMS.map(notifyState);
   const sent   = states.filter(s => s.cls === 'ok').length;
   const queued = states.filter(s => s.cls === 'warn').length;
-
   const rows = ITEMS.map((item, i) => {
     const st   = states[i];
     const addr = ADDRESS_MAP.get(item.recipient_address_id);
@@ -333,7 +329,6 @@ function renderNotifications() {
       </tr>
     `;
   }).join('');
-
   el.innerHTML = `
     <div class="section">
       <div class="section-head">
@@ -344,8 +339,7 @@ function renderNotifications() {
       </div>
       ${ITEMS.length ? `
         <table>
-          <thead><tr><th>Recipient</th><th>Item</th><th>Status</th>
-              <th>Last notified</th><th>State</th></tr></thead>
+          <thead><tr><th>Recipient</th><th>Item</th><th>Status</th><th>Last notified</th><th>State</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       ` : '<div class="empty">No items to notify on.</div>'}
@@ -357,7 +351,6 @@ function renderNotifications() {
 function renderScheduler() {
   const el = document.getElementById('tab-scheduler');
   const active = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status));
-
   const rows = ITEMS.map(item => {
     let note = '';
     if (!item.tracking_ref)      note = '<span class="pill warn">awaiting tracking ref</span>';
@@ -371,12 +364,9 @@ function renderScheduler() {
       </tr>
     `;
   }).join('');
-
   el.innerHTML = `
     <div class="section">
-      <div class="section-head">
-        <div><h2>Schedule</h2><div class="sub">How often the checker polls each carrier.</div></div>
-      </div>
+      <div class="section-head"><div><h2>Schedule</h2><div class="sub">How often the checker polls each carrier.</div></div></div>
       <div class="info-row"><span class="k">Frequency</span><span>Hourly &middot; <code>0 * * * *</code></span></div>
       <div class="info-row"><span class="k">Runner</span><span>GitHub Actions &middot; <code>.github/workflows/checker.yml</code></span></div>
       <div class="info-row"><span class="k">Store</span><span>Supabase Postgres</span></div>
@@ -384,9 +374,7 @@ function renderScheduler() {
       <div class="info-row"><span class="k">Estimated next run</span><span class="num">${esc(nextHourlyRun())}</span></div>
     </div>
     <div class="section">
-      <div class="section-head">
-        <div><h2>Last checked</h2><div class="sub">When each item was last polled.</div></div>
-      </div>
+      <div class="section-head"><div><h2>Last checked</h2><div class="sub">When each item was last polled.</div></div></div>
       ${ITEMS.length ? `
         <table>
           <thead><tr><th>Item</th><th>Status</th><th>Last checked</th><th></th></tr></thead>
@@ -401,21 +389,283 @@ function renderScheduler() {
 function renderEmail() {
   document.getElementById('tab-email').innerHTML = `
     <div class="section">
-      <div class="section-head">
-        <div><h2>Email ingestion</h2><div class="sub">Auto-import orders from your inbox.</div></div>
-      </div>
+      <div class="section-head"><div><h2>Email ingestion</h2><div class="sub">Auto-import orders from your inbox.</div></div></div>
       <div class="info-row"><span class="k">Status</span><span class="pill muted">Not connected</span></div>
       <div class="section-body">
         <p style="color: var(--text-muted); margin-bottom: 12px; font-size: 13.5px;">
           Once connected, order confirmations from these senders would insert new
           rows into the <code>inventory</code> table automatically.
         </p>
-        <ul class="sources">
-          ${EMAIL_SOURCES.map(s => `<li>${esc(s)}</li>`).join('')}
-        </ul>
+        <ul class="sources">${EMAIL_SOURCES.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
       </div>
     </div>
   `;
+}
+
+// ── Modal infrastructure ──────────────────────────────────────────────────────
+function showModal({ title, body, submitText = 'Save', onSubmit, onDelete }) {
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.innerHTML = `
+    <form class="modal" id="modal-form" novalidate>
+      <div class="modal-head">
+        <h3>${esc(title)}</h3>
+        <button type="button" class="modal-close" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">${body}</div>
+      <div class="modal-error hidden" id="modal-error"></div>
+      <div class="modal-foot">
+        ${onDelete ? '<button type="button" class="btn-danger" id="modal-delete">Delete</button>' : ''}
+        <div class="spacer"></div>
+        <button type="button" class="btn-secondary modal-close">Cancel</button>
+        <button type="submit" class="btn-primary">${esc(submitText)}</button>
+      </div>
+    </form>
+  `;
+  document.body.appendChild(overlay);
+
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  document.addEventListener('keydown', onKey);
+  overlay.querySelectorAll('.modal-close').forEach(el => el.addEventListener('click', close));
+  overlay.addEventListener('click', e => { if (e.target === overlay) close(); });
+
+  const form  = overlay.querySelector('#modal-form');
+  const errEl = overlay.querySelector('#modal-error');
+  const setBusy = (busy) => overlay.querySelectorAll('button, input, select, textarea')
+    .forEach(el => el.disabled = busy);
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errEl.classList.add('hidden');
+    setBusy(true);
+    try {
+      await onSubmit(form);
+      close();
+      await refresh();
+    } catch (err) {
+      errEl.textContent = err.message || String(err);
+      errEl.classList.remove('hidden');
+      setBusy(false);
+    }
+  });
+
+  if (onDelete) {
+    overlay.querySelector('#modal-delete').addEventListener('click', async () => {
+      if (!confirm('Delete this record? This cannot be undone.')) return;
+      errEl.classList.add('hidden');
+      setBusy(true);
+      try {
+        await onDelete();
+        close();
+        await refresh();
+      } catch (err) {
+        errEl.textContent = err.message || String(err);
+        errEl.classList.remove('hidden');
+        setBusy(false);
+      }
+    });
+  }
+
+  setTimeout(() => {
+    const first = overlay.querySelector('input:not([type="hidden"]), select, textarea');
+    if (first) first.focus();
+  }, 50);
+}
+
+// ── Form fields ───────────────────────────────────────────────────────────────
+function field(label, name, type, opts = {}) {
+  const v = opts.value ?? '';
+  const req = opts.required ? 'required' : '';
+  const wide = opts.wide ? ' wide' : '';
+  if (type === 'textarea') {
+    return `<label class="field${wide}"><span>${esc(label)}</span><textarea name="${esc(name)}" ${req}>${esc(v)}</textarea></label>`;
+  }
+  if (type === 'select') {
+    const optsHtml = opts.options.map(o => {
+      const val = typeof o === 'string' ? o : o.value;
+      const lbl = typeof o === 'string' ? o : o.label;
+      return `<option value="${esc(val)}" ${String(val) === String(v) ? 'selected' : ''}>${esc(lbl)}</option>`;
+    }).join('');
+    return `<label class="field${wide}"><span>${esc(label)}</span><select name="${esc(name)}" ${req}>${optsHtml}</select></label>`;
+  }
+  return `<label class="field${wide}"><span>${esc(label)}</span><input type="${esc(type)}" name="${esc(name)}" value="${esc(v)}" ${req}></label>`;
+}
+
+function addressFormHtml(a = {}) {
+  return `
+    <div class="form-grid">
+      ${field('Full name', 'full_name', 'text', { value: a.full_name, required: true })}
+      ${field('Type', 'type', 'select', { value: a.type || 'Friend', options: ['Friend', 'Customer', 'Self'] })}
+      ${field('Email', 'email', 'email', { value: a.email })}
+      ${field('Phone', 'phone', 'tel', { value: a.phone })}
+      ${field('WhatsApp', 'whatsapp', 'tel', { value: a.whatsapp })}
+      ${field('Preferred channel', 'preferred_channel', 'select', { value: a.preferred_channel || 'sms', options: ['sms', 'whatsapp', 'email'] })}
+      ${field('Address line 1', 'line1', 'text', { value: a.line1, wide: true })}
+      ${field('Address line 2', 'line2', 'text', { value: a.line2, wide: true })}
+      ${field('Address line 3', 'line3', 'text', { value: a.line3, wide: true })}
+      ${field('Town / City', 'town_city', 'text', { value: a.town_city })}
+      ${field('County', 'county', 'text', { value: a.county })}
+      ${field('Postcode', 'postcode', 'text', { value: a.postcode })}
+      ${field('Country', 'country', 'text', { value: a.country || 'UK' })}
+      ${field('Notes', 'notes', 'textarea', { value: a.notes, wide: true })}
+    </div>
+  `;
+}
+
+function inventoryFormHtml(it = {}) {
+  const addrOpts = [{ value: '', label: '—' }, ...ADDRESSES.map(a => ({ value: a.id, label: a.full_name }))];
+  const carrierOpts = [{ value: '', label: '—' }, ...Object.entries(CARRIER_LABELS).map(([v, l]) => ({ value: v, label: l }))];
+  return `
+    <div class="form-section-label">Card</div>
+    <div class="form-grid">
+      ${field('Item', 'item', 'text', { value: it.item, required: true, wide: true })}
+      ${field('Category', 'category', 'text', { value: it.category })}
+      ${field('Set / Edition', 'set_edition', 'text', { value: it.set_edition })}
+      ${field('Condition', 'condition', 'text', { value: it.condition })}
+      ${field('Quantity', 'quantity', 'number', { value: it.quantity ?? 1 })}
+    </div>
+    <div class="form-section-label">Buying</div>
+    <div class="form-grid">
+      ${field('Source', 'source', 'text', { value: it.source })}
+      ${field('Order reference', 'order_reference', 'text', { value: it.order_reference })}
+      ${field('Date ordered', 'date_ordered', 'date', { value: it.date_ordered })}
+      ${field('Cost', 'cost', 'number', { value: it.cost ?? 0 })}
+      ${field('Shipping (in)', 'shipping_in_cost', 'number', { value: it.shipping_in_cost ?? 0 })}
+      ${field('Carrier', 'carrier', 'select', { value: it.carrier || '', options: carrierOpts })}
+      ${field('Tracking ref', 'tracking_ref', 'text', { value: it.tracking_ref })}
+      ${field('Tracking URL', 'tracking_url', 'url', { value: it.tracking_url, wide: true })}
+      ${field('Acquisition status', 'acquisition_status', 'select', { value: it.acquisition_status || 'pending', options: ACQ_STATUSES })}
+      ${field('Date received', 'date_received', 'date', { value: it.date_received })}
+      ${field('Recipient', 'recipient_address_id', 'select', { value: it.recipient_address_id || '', options: addrOpts, required: true, wide: true })}
+    </div>
+    <div class="form-section-label">Selling</div>
+    <div class="form-grid">
+      ${field('Sale status', 'sale_status', 'select', { value: it.sale_status || 'holding', options: SALE_STATUSES })}
+      ${field('Sold via', 'sold_via', 'text', { value: it.sold_via })}
+      ${field('Sale price', 'sale_price', 'number', { value: it.sale_price ?? '' })}
+      ${field('Fees', 'fees', 'number', { value: it.fees ?? '' })}
+      ${field('Shipping (out)', 'shipping_out_cost', 'number', { value: it.shipping_out_cost ?? '' })}
+      ${field('Date sold', 'date_sold', 'date', { value: it.date_sold })}
+    </div>
+    <div class="form-grid">
+      ${field('Notes', 'notes', 'textarea', { value: it.notes, wide: true })}
+    </div>
+  `;
+}
+
+// ── CRUD: address / inventory ─────────────────────────────────────────────────
+function readForm(form) {
+  const data = {};
+  for (const [k, v] of new FormData(form)) {
+    data[k] = typeof v === 'string' ? v.trim() : v;
+  }
+  return data;
+}
+
+function cleanInventoryPayload(data) {
+  // Convert numerics
+  ['quantity', 'cost', 'shipping_in_cost', 'sale_price', 'fees', 'shipping_out_cost'].forEach(k => {
+    if (data[k] === '' || data[k] == null) data[k] = null;
+    else data[k] = Number(data[k]);
+  });
+  // Null out empty optional fields the schema accepts as null
+  ['date_ordered', 'date_received', 'date_sold', 'recipient_address_id'].forEach(k => {
+    if (data[k] === '' || data[k] == null) data[k] = null;
+  });
+  return data;
+}
+
+function openAddressEditor(existing) {
+  const editing = !!existing;
+  showModal({
+    title: editing ? 'Edit address' : 'New address',
+    body:  addressFormHtml(existing || {}),
+    submitText: editing ? 'Save changes' : 'Add address',
+    onSubmit: async (form) => {
+      const data = readForm(form);
+      if (editing) {
+        const { error } = await supabase.from('addresses').update(data).eq('id', existing.id);
+        if (error) throw error;
+      } else {
+        data.id = newId('addr');
+        const { error } = await supabase.from('addresses').insert(data);
+        if (error) throw error;
+      }
+    },
+    onDelete: editing
+      ? async () => {
+          // Block delete if any inventory references this address
+          const refs = ITEMS.filter(i => i.recipient_address_id === existing.id);
+          if (refs.length) {
+            throw new Error(`${refs.length} item${refs.length === 1 ? '' : 's'} still ship here — reassign or delete those first.`);
+          }
+          const { error } = await supabase.from('addresses').delete().eq('id', existing.id);
+          if (error) throw error;
+        }
+      : null,
+  });
+}
+
+function openInventoryEditor(existing) {
+  const editing = !!existing;
+  showModal({
+    title: editing ? 'Edit item' : 'New item',
+    body:  inventoryFormHtml(existing || {}),
+    submitText: editing ? 'Save changes' : 'Add item',
+    onSubmit: async (form) => {
+      const data = cleanInventoryPayload(readForm(form));
+      if (editing) {
+        const { error } = await supabase.from('inventory').update(data).eq('id', existing.id);
+        if (error) throw error;
+      } else {
+        data.id = newId('inv');
+        const { error } = await supabase.from('inventory').insert(data);
+        if (error) throw error;
+      }
+    },
+    onDelete: editing
+      ? async () => {
+          const { error } = await supabase.from('inventory').delete().eq('id', existing.id);
+          if (error) throw error;
+        }
+      : null,
+  });
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────────
+function openLoginModal() {
+  showModal({
+    title: 'Sign in',
+    body: `
+      <div class="form-grid">
+        ${field('Email',    'email',    'email',    { value: '', required: true, wide: true })}
+        ${field('Password', 'password', 'password', { value: '', required: true, wide: true })}
+      </div>
+      <p class="muted" style="margin-top:8px;font-size:12.5px">
+        Don't have an account yet? Create one in Supabase → Authentication → Users.
+      </p>
+    `,
+    submitText: 'Sign in',
+    onSubmit: async (form) => {
+      const { email, password } = readForm(form);
+      const { error } = await supabase.auth.signInWithPassword({ email, password });
+      if (error) throw error;
+    },
+  });
+}
+
+function updateAuthUi() {
+  const btn = document.getElementById('auth-btn');
+  if (!btn) return;
+  if (AUTH_USER) {
+    btn.textContent = `Sign out (${AUTH_USER.email})`;
+    btn.onclick = async () => { await supabase.auth.signOut(); };
+  } else {
+    btn.textContent = 'Sign in';
+    btn.onclick = openLoginModal;
+  }
+  document.body.classList.toggle('authed', !!AUTH_USER);
 }
 
 // ── Nav & tabs ────────────────────────────────────────────────────────────────
@@ -424,7 +674,6 @@ function setupNav() {
     const tab = btn.dataset.tab;
     btn.insertAdjacentHTML('afterbegin', `<span class="nav-ico">${NAV_ICONS[tab] || ''}</span>`);
   });
-
   document.getElementById('nav').addEventListener('click', e => {
     const btn = e.target.closest('.nav-btn');
     if (!btn) return;
@@ -461,6 +710,24 @@ async function refresh() {
   }
 }
 
-setupNav();
-document.getElementById('refresh').addEventListener('click', refresh);
-refresh();
+// ── Init ──────────────────────────────────────────────────────────────────────
+async function init() {
+  setupNav();
+  document.getElementById('refresh').addEventListener('click', refresh);
+
+  // Initial auth state
+  const { data: { session } } = await supabase.auth.getSession();
+  AUTH_USER = session?.user ?? null;
+  updateAuthUi();
+
+  // React to auth changes
+  supabase.auth.onAuthStateChange((_event, session) => {
+    AUTH_USER = session?.user ?? null;
+    updateAuthUi();
+    renderAll();
+  });
+
+  await refresh();
+}
+
+init();

@@ -122,6 +122,21 @@ create policy "Public read inventory"
   to anon, authenticated
   using (true);
 
+-- Signed-in users get full CRUD (the dashboard gates this behind login).
+drop policy if exists "Authenticated write addresses" on public.addresses;
+create policy "Authenticated write addresses"
+  on public.addresses for all
+  to authenticated
+  using (true)
+  with check (true);
+
+drop policy if exists "Authenticated write inventory" on public.inventory;
+create policy "Authenticated write inventory"
+  on public.inventory for all
+  to authenticated
+  using (true)
+  with check (true);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Seed: current CardTrack data
 -- ─────────────────────────────────────────────────────────────────────────────
