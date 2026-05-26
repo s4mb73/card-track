@@ -1,11 +1,13 @@
 /**
  * app.js
- * CardTrack dashboard — a static single-page UI that reads cardtrack/orders.json
- * and renders Inventory, Addresses, Notifications, Scheduler and Email views.
+ * CardTrack dashboard — a static SPA that reads cardtrack/inventory.json
+ * and cardtrack/addresses.json and renders the Inventory, Addresses,
+ * Notifications, Scheduler and Email views.
  * No build step, no framework: served straight from the repo root by Vercel.
  */
 
-const ORDERS_URL = 'cardtrack/orders.json';
+const INVENTORY_URL = 'cardtrack/inventory.json';
+const ADDRESSES_URL = 'cardtrack/addresses.json';
 
 const STATUS_LABELS = {
   pending:          'Pending',
@@ -14,6 +16,7 @@ const STATUS_LABELS = {
   delivered:        'Delivered',
   failed:           'Delivery failed',
   unknown:          'Unknown',
+  sold:             'Sold',
 };
 
 const CARRIER_LABELS = {
@@ -42,14 +45,16 @@ const NAV_ICONS = {
 };
 
 const TAB_META = {
-  inventory:     { title: 'Inventory',     sub: 'Every card order and its current tracking status.' },
-  addresses:     { title: 'Addresses',     sub: 'Recipients these cards are being sent to.' },
+  inventory:     { title: 'Inventory',     sub: 'Cards in your collection — what you paid, where they live, and what they sold for.' },
+  addresses:     { title: 'Addresses',     sub: 'Friends and customers — where cards are sent and who you ship to.' },
   notifications: { title: 'Notifications', sub: 'Who has been notified, and what is queued for the next check.' },
   scheduler:     { title: 'Scheduler',     sub: 'How often the checker polls each carrier.' },
   email:         { title: 'Email',         sub: 'Ingest order confirmations from your inbox.' },
 };
 
-let ORDERS = [];
+let ITEMS = [];
+let ADDRESSES = [];
+let ADDRESS_MAP = new Map();
 let inventoryFilter = 'all';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -64,7 +69,9 @@ function safeUrl(url) {
 }
 
 function money(amount) {
-  return '£' + Number(amount || 0).toLocaleString('en-GB');
+  const n = Number(amount || 0);
+  const sign = n < 0 ? '-' : '';
+  return sign + '£' + Math.abs(n).toLocaleString('en-GB');
 }
 
 function statusLabel(s)  { return STATUS_LABELS[s] || s || 'Unknown'; }
@@ -72,13 +79,13 @@ function carrierLabel(c) { return CARRIER_LABELS[c] || c || '—'; }
 
 function addressLines(addr) {
   if (!addr) return [];
-  return [addr.line1, addr.line2, addr.city, addr.postcode]
+  return [addr.line1, addr.line2, addr.line3, addr.townCity, addr.county, addr.postcode]
     .map(s => String(s || '').trim())
     .filter(Boolean);
 }
 
 function shortAddress(addr) {
-  return [addr?.city, addr?.postcode]
+  return [addr?.townCity, addr?.postcode]
     .map(s => String(s || '').trim())
     .filter(Boolean)
     .join(', ');
@@ -114,26 +121,48 @@ function statusCell(s) {
   return `<span class="status status-${esc(s)}"><span class="sd"></span>${esc(statusLabel(s))}</span>`;
 }
 
+function effectiveStatus(item) {
+  return item.saleStatus === 'sold' ? 'sold' : item.acquisitionStatus;
+}
+
+function profitOf(item) {
+  if (item.saleStatus !== 'sold') return null;
+  const sale     = Number(item.salePrice)       || 0;
+  const cost     = Number(item.cost)            || 0;
+  const fees     = Number(item.fees)            || 0;
+  const shipIn   = Number(item.shippingInCost)  || 0;
+  const shipOut  = Number(item.shippingOutCost) || 0;
+  return sale - cost - fees - shipIn - shipOut;
+}
+
 // ── Data ──────────────────────────────────────────────────────────────────────
-async function loadOrders() {
-  const res = await fetch(ORDERS_URL, { cache: 'no-store' });
-  if (!res.ok) throw new Error(`HTTP ${res.status} fetching ${ORDERS_URL}`);
-  const data = await res.json();
-  ORDERS = Array.isArray(data.orders) ? data.orders : [];
+async function loadData() {
+  const [invRes, addrRes] = await Promise.all([
+    fetch(INVENTORY_URL, { cache: 'no-store' }),
+    fetch(ADDRESSES_URL, { cache: 'no-store' }),
+  ]);
+  if (!invRes.ok)  throw new Error(`HTTP ${invRes.status} fetching ${INVENTORY_URL}`);
+  if (!addrRes.ok) throw new Error(`HTTP ${addrRes.status} fetching ${ADDRESSES_URL}`);
+  const inv  = await invRes.json();
+  const addr = await addrRes.json();
+  ITEMS       = Array.isArray(inv.items) ? inv.items : [];
+  ADDRESSES   = Array.isArray(addr.addresses) ? addr.addresses : [];
+  ADDRESS_MAP = new Map(ADDRESSES.map(a => [a.id, a]));
 }
 
 // ── KPI tiles ─────────────────────────────────────────────────────────────────
 function renderSummary() {
-  const total     = ORDERS.length;
-  const value     = ORDERS.reduce((s, o) => s + (Number(o.price) || 0), 0);
-  const active    = ORDERS.filter(o => ACTIVE_STATUSES.includes(o.status)).length;
-  const delivered = ORDERS.filter(o => o.status === 'delivered').length;
+  const total  = ITEMS.length;
+  const spent  = ITEMS.reduce((s, i) => s + (Number(i.cost) || 0), 0);
+  const active = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisitionStatus)).length;
+  const sold   = ITEMS.filter(i => i.saleStatus === 'sold');
+  const profit = sold.reduce((s, i) => s + (profitOf(i) || 0), 0);
 
   const tiles = [
-    { label: 'Total orders',  value: total,        tint: 'purple' },
-    { label: 'Total value',   value: money(value), tint: 'green'  },
-    { label: 'In transit',    value: active,       tint: 'blue'   },
-    { label: 'Delivered',     value: delivered,    tint: 'amber'  },
+    { label: 'Items',      value: total,        tint: 'purple' },
+    { label: 'Spent',      value: money(spent), tint: 'green'  },
+    { label: 'In transit', value: active,       tint: 'blue'   },
+    { label: 'Profit',     value: money(profit), tint: 'amber' },
   ];
 
   document.getElementById('summary').innerHTML = tiles.map(t => `
@@ -144,39 +173,62 @@ function renderSummary() {
   `).join('');
 }
 
-// ── Inventory (table) ─────────────────────────────────────────────────────────
+// ── Inventory ─────────────────────────────────────────────────────────────────
 function renderInventory() {
   const el = document.getElementById('tab-inventory');
-  const filtered = inventoryFilter === 'all'
-    ? ORDERS
-    : ORDERS.filter(o => o.status === inventoryFilter);
 
-  const options = ['all', ...Object.keys(STATUS_LABELS)].map(s => `
-    <option value="${esc(s)}" ${s === inventoryFilter ? 'selected' : ''}>
-      ${s === 'all' ? 'All statuses' : esc(statusLabel(s))}
+  let filtered;
+  if (inventoryFilter === 'all') {
+    filtered = ITEMS;
+  } else if (inventoryFilter === 'sold') {
+    filtered = ITEMS.filter(i => i.saleStatus === 'sold');
+  } else {
+    filtered = ITEMS.filter(i => i.acquisitionStatus === inventoryFilter
+                              && i.saleStatus !== 'sold');
+  }
+
+  const FILTER_KEYS = ['all', 'pending', 'in_transit', 'out_for_delivery',
+                       'delivered', 'failed', 'sold'];
+  const options = FILTER_KEYS.map(k => `
+    <option value="${esc(k)}" ${k === inventoryFilter ? 'selected' : ''}>
+      ${k === 'all' ? 'All statuses' : esc(statusLabel(k))}
     </option>
   `).join('');
 
-  const rows = filtered.map(o => {
-    const url = safeUrl(o.tracking?.url);
-    const ref = o.tracking?.ref || '';
+  const rows = filtered.map(item => {
+    const url  = safeUrl(item.trackingUrl);
+    const ref  = item.trackingRef || '';
     const trackHtml = ref
       ? (url
           ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="mono">${esc(ref)}</a>`
           : `<span class="mono">${esc(ref)}</span>`)
       : '<span class="muted">—</span>';
-    const dest = shortAddress(o.recipient?.address);
+
+    const addr = ADDRESS_MAP.get(item.recipientAddressId);
+    const destName = addr?.fullName || '—';
+    const destLoc  = shortAddress(addr);
+    const status   = effectiveStatus(item);
+    const profit   = profitOf(item);
+
+    const subLine = [item.category, item.setEdition].filter(Boolean).map(esc).join(' · ');
+
     return `
       <tr>
-        <td><div class="primary">${esc(o.item)}</div></td>
         <td>
-          ${esc(o.recipient?.name)}
-          ${dest ? `<span class="muted">${esc(dest)}</span>` : ''}
+          <div class="primary">${esc(item.item)}</div>
+          ${subLine ? `<span class="muted">${subLine}</span>` : ''}
         </td>
-        <td>${esc(carrierLabel(o.tracking?.carrier))}</td>
-        <td>${statusCell(o.status)}</td>
+        <td>
+          ${esc(destName)}
+          ${destLoc ? `<span class="muted">${esc(destLoc)}</span>` : ''}
+        </td>
+        <td>${esc(carrierLabel(item.carrier))}</td>
+        <td>${statusCell(status)}</td>
         <td>${trackHtml}</td>
-        <td class="num">${esc(money(o.price))}</td>
+        <td class="num">${esc(money(item.cost))}</td>
+        <td class="num">${profit !== null
+          ? `<span class="${profit >= 0 ? 'profit-pos' : 'profit-neg'}">${esc(money(profit))}</span>`
+          : '<span class="muted">—</span>'}</td>
       </tr>
     `;
   }).join('');
@@ -185,8 +237,8 @@ function renderInventory() {
     <div class="section">
       <div class="section-head">
         <div>
-          <h2>Orders</h2>
-          <div class="sub">${filtered.length} of ${ORDERS.length} order${ORDERS.length === 1 ? '' : 's'}</div>
+          <h2>Items</h2>
+          <div class="sub">${filtered.length} of ${ITEMS.length} item${ITEMS.length === 1 ? '' : 's'}</div>
         </div>
         <div class="toolbar">
           <select id="status-filter">${options}</select>
@@ -196,11 +248,11 @@ function renderInventory() {
         <table>
           <thead>
             <tr><th>Item</th><th>Sending to</th><th>Carrier</th>
-                <th>Status</th><th>Tracking</th><th>Value</th></tr>
+                <th>Status</th><th>Tracking</th><th>Cost</th><th>Profit</th></tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
-      ` : '<div class="empty">No orders match this filter.</div>'}
+      ` : '<div class="empty">No items match this filter.</div>'}
     </div>
   `;
 
@@ -213,77 +265,68 @@ function renderInventory() {
 // ── Addresses ─────────────────────────────────────────────────────────────────
 function renderAddresses() {
   const el = document.getElementById('tab-addresses');
-  const people = new Map();
 
-  for (const o of ORDERS) {
-    const r = o.recipient || {};
-    const key = `${r.name || '?'}|${r.phone || ''}`;
-    if (!people.has(key)) {
-      people.set(key, {
-        name: r.name || 'Unknown',
-        phone: r.phone || '',
-        whatsapp: r.whatsapp || '',
-        address: r.address || null,
-        orders: [],
-        value: 0,
-      });
-    }
-    const p = people.get(key);
-    p.orders.push(o.item);
-    p.value += Number(o.price) || 0;
-  }
-
-  const cards = [...people.values()].map(p => {
-    const lines = addressLines(p.address);
-    const addrHtml = lines.length
+  const cards = ADDRESSES.map(a => {
+    const myItems   = ITEMS.filter(i => i.recipientAddressId === a.id);
+    const totalCost = myItems.reduce((s, i) => s + (Number(i.cost) || 0), 0);
+    const lines     = addressLines(a);
+    const addrHtml  = lines.length
       ? lines.map(esc).join('<br>')
       : '<span class="muted">No address on file</span>';
+    const channel   = (a.preferredChannel || 'sms').toLowerCase();
+
     return `
       <div class="person">
         <div class="head">
-          <div class="avatar">${esc(initials(p.name))}</div>
-          <div class="name">${esc(p.name)}</div>
+          <div class="avatar">${esc(initials(a.fullName))}</div>
+          <div class="head-meta">
+            <div class="name">${esc(a.fullName)}</div>
+            ${a.type ? `<span class="type-tag">${esc(a.type)}</span>` : ''}
+          </div>
         </div>
         <div class="addr">${addrHtml}</div>
         <div class="contact">
-          <div><b>Phone</b>${esc(p.phone || '—')}</div>
-          <div><b>WhatsApp</b>${esc(p.whatsapp || '—')}</div>
+          ${a.email     ? `<div><b>Email</b>${esc(a.email)}</div>` : ''}
+          <div><b>Phone</b>${esc(a.phone || '—')}</div>
+          <div><b>WhatsApp</b>${esc(a.whatsapp || '—')}</div>
+          <div><b>Prefers</b><span class="channel-tag">${esc(channel.toUpperCase())}</span></div>
         </div>
         <div class="meta">
-          <span>${p.orders.length} order${p.orders.length === 1 ? '' : 's'}</span>
-          <b>${esc(money(p.value))}</b>
+          <span>${myItems.length} item${myItems.length === 1 ? '' : 's'}</span>
+          <b>${esc(money(totalCost))}</b>
         </div>
-        <div class="items">${p.orders.map(esc).join(', ')}</div>
+        ${myItems.length ? `<div class="items">${myItems.map(i => esc(i.item)).join(', ')}</div>` : ''}
       </div>
     `;
   }).join('');
 
-  el.innerHTML = people.size
+  el.innerHTML = ADDRESSES.length
     ? `<div class="person-grid">${cards}</div>`
-    : '<div class="empty">No recipients yet.</div>';
+    : '<div class="empty">No addresses yet.</div>';
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────────
-function notifyState(o) {
-  if (!NOTIFY_TRIGGERS.includes(o.status)) return { label: 'No alert', cls: 'muted' };
-  if (o.lastNotified === o.status)         return { label: 'Sent',     cls: 'ok' };
+function notifyState(item) {
+  if (!NOTIFY_TRIGGERS.includes(item.acquisitionStatus)) return { label: 'No alert', cls: 'muted' };
+  if (item.lastNotified === item.acquisitionStatus)      return { label: 'Sent',     cls: 'ok' };
   return { label: 'Queued', cls: 'warn' };
 }
 
 function renderNotifications() {
   const el = document.getElementById('tab-notifications');
-  const states = ORDERS.map(notifyState);
+  const states = ITEMS.map(notifyState);
   const sent   = states.filter(s => s.cls === 'ok').length;
   const queued = states.filter(s => s.cls === 'warn').length;
 
-  const rows = ORDERS.map((o, i) => {
-    const st = states[i];
+  const rows = ITEMS.map((item, i) => {
+    const st   = states[i];
+    const addr = ADDRESS_MAP.get(item.recipientAddressId);
     return `
       <tr>
-        <td><div class="primary">${esc(o.recipient?.name)}</div></td>
-        <td>${esc(o.item)}</td>
-        <td>${statusCell(o.status)}</td>
-        <td>${o.lastNotified ? esc(statusLabel(o.lastNotified)) : '<span class="muted">Never</span>'}</td>
+        <td><div class="primary">${esc(addr?.fullName || '—')}</div></td>
+        <td>${esc(item.item)}</td>
+        <td>${statusCell(item.acquisitionStatus)}</td>
+        <td>${item.lastNotified ? esc(statusLabel(item.lastNotified)) : '<span class="muted">Never</span>'}</td>
         <td><span class="pill ${st.cls}">${esc(st.label)}</span></td>
       </tr>
     `;
@@ -297,13 +340,13 @@ function renderNotifications() {
           <div class="sub">${sent} sent &middot; ${queued} queued for the next check</div>
         </div>
       </div>
-      ${ORDERS.length ? `
+      ${ITEMS.length ? `
         <table>
           <thead><tr><th>Recipient</th><th>Item</th><th>Status</th>
               <th>Last notified</th><th>State</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
-      ` : '<div class="empty">No orders to notify on.</div>'}
+      ` : '<div class="empty">No items to notify on.</div>'}
     </div>
   `;
 }
@@ -311,17 +354,17 @@ function renderNotifications() {
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 function renderScheduler() {
   const el = document.getElementById('tab-scheduler');
-  const active = ORDERS.filter(o => ACTIVE_STATUSES.includes(o.status));
+  const active = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisitionStatus));
 
-  const rows = ORDERS.map(o => {
+  const rows = ITEMS.map(item => {
     let note = '';
-    if (!o.tracking?.ref) note = '<span class="pill warn">awaiting tracking ref</span>';
-    else if (!o.lastChecked) note = '<span class="pill muted">never checked</span>';
+    if (!item.trackingRef)      note = '<span class="pill warn">awaiting tracking ref</span>';
+    else if (!item.lastChecked) note = '<span class="pill muted">never checked</span>';
     return `
       <tr>
-        <td><div class="primary">${esc(o.item)}</div></td>
-        <td>${statusCell(o.status)}</td>
-        <td class="num">${esc(relTime(o.lastChecked))}</td>
+        <td><div class="primary">${esc(item.item)}</div></td>
+        <td>${statusCell(item.acquisitionStatus)}</td>
+        <td class="num">${esc(relTime(item.lastChecked))}</td>
         <td>${note}</td>
       </tr>
     `;
@@ -334,19 +377,19 @@ function renderScheduler() {
       </div>
       <div class="info-row"><span class="k">Frequency</span><span>Hourly &middot; <code>0 * * * *</code></span></div>
       <div class="info-row"><span class="k">Runner</span><span>GitHub Actions &middot; <code>.github/workflows/checker.yml</code></span></div>
-      <div class="info-row"><span class="k">Active orders next run</span><span class="num">${active.length}</span></div>
+      <div class="info-row"><span class="k">Active items next run</span><span class="num">${active.length}</span></div>
       <div class="info-row"><span class="k">Estimated next run</span><span class="num">${esc(nextHourlyRun())}</span></div>
     </div>
     <div class="section">
       <div class="section-head">
-        <div><h2>Last checked</h2><div class="sub">When each order was last polled.</div></div>
+        <div><h2>Last checked</h2><div class="sub">When each item was last polled.</div></div>
       </div>
-      ${ORDERS.length ? `
+      ${ITEMS.length ? `
         <table>
           <thead><tr><th>Item</th><th>Status</th><th>Last checked</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
-      ` : '<div class="empty">No orders scheduled.</div>'}
+      ` : '<div class="empty">No items scheduled.</div>'}
     </div>
   `;
 }
@@ -362,7 +405,7 @@ function renderEmail() {
       <div class="section-body">
         <p style="color: var(--text-muted); margin-bottom: 12px; font-size: 13.5px;">
           Once connected, order confirmations from these senders would create new
-          orders in <code>cardtrack/orders.json</code> automatically.
+          items in <code>cardtrack/inventory.json</code> automatically.
         </p>
         <ul class="sources">
           ${EMAIL_SOURCES.map(s => `<li>${esc(s)}</li>`).join('')}
@@ -387,7 +430,7 @@ function setupNav() {
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === `tab-${tab}`));
     const meta = TAB_META[tab] || {};
     document.getElementById('page-title').textContent = meta.title || '';
-    document.getElementById('page-sub').textContent = meta.sub || '';
+    document.getElementById('page-sub').textContent   = meta.sub   || '';
   });
 }
 
@@ -404,13 +447,13 @@ function renderAll() {
 async function refresh() {
   const errEl = document.getElementById('error');
   try {
-    await loadOrders();
+    await loadData();
     errEl.classList.add('hidden');
     renderAll();
     document.getElementById('loaded-at').textContent =
       `Updated ${new Date().toLocaleTimeString('en-GB')}`;
   } catch (err) {
-    errEl.textContent = `Could not load orders: ${err.message}`;
+    errEl.textContent = `Could not load data: ${err.message}`;
     errEl.classList.remove('hidden');
   }
 }

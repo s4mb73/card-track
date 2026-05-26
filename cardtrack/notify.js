@@ -1,6 +1,7 @@
 /**
  * notify.js
  * Sends SMS and/or WhatsApp messages via Twilio.
+ * Channel is picked per-recipient from address.preferredChannel.
  */
 
 import twilio from 'twilio';
@@ -20,69 +21,67 @@ function getClient() {
 }
 
 // ── Message templates ─────────────────────────────────────────────────────────
-function buildMessage(order, newStatus) {
-  const name  = order.recipient.name.split(' ')[0]; // first name only
-  const item  = order.item;
+function buildMessage(item, address, newStatus) {
+  const name  = address.fullName.split(' ')[0]; // first name only
   const label = STATUS_LABELS[newStatus] ?? newStatus;
-  const ref   = order.tracking.ref;
+  const ref   = item.trackingRef;
 
   switch (newStatus) {
     case 'out_for_delivery':
-      return `Hi ${name}! Good news — your ${item} is out for delivery today 🚚 Ref: ${ref}`;
+      return `Hi ${name}! Good news — your ${item.item} is out for delivery today 🚚 Ref: ${ref}`;
     case 'delivered':
-      return `Hi ${name}! Your ${item} has been delivered ✅ Hope you love it!`;
+      return `Hi ${name}! Your ${item.item} has been delivered ✅ Hope you love it!`;
     case 'failed':
-      return `Hi ${name}, heads up — delivery of your ${item} was attempted but failed. Ref: ${ref}. Check Royal Mail/carrier for redelivery options.`;
+      return `Hi ${name}, heads up — delivery of your ${item.item} was attempted but failed. Ref: ${ref}. Check the carrier for redelivery options.`;
     case 'in_transit':
-      return `Hi ${name}! Your ${item} is on its way 📦 Track it with ref ${ref}`;
+      return `Hi ${name}! Your ${item.item} is on its way 📦 Track it with ref ${ref}`;
     default:
-      return `Hi ${name}, update on your ${item}: ${label}. Ref: ${ref}`;
+      return `Hi ${name}, update on your ${item.item}: ${label}. Ref: ${ref}`;
   }
 }
 
-// ── Send to one recipient ─────────────────────────────────────────────────────
+// ── Channels ──────────────────────────────────────────────────────────────────
 async function sendSMS(to, body) {
   const client = getClient();
   const from   = process.env.TWILIO_FROM_NUMBER;
   if (!from) throw new Error('TWILIO_FROM_NUMBER not set');
-
   const msg = await client.messages.create({ body, from, to });
   return { channel: 'sms', sid: msg.sid, status: msg.status };
 }
 
 async function sendWhatsApp(to, body) {
-  const client  = getClient();
-  const from    = process.env.TWILIO_WHATSAPP_FROM;
+  const client = getClient();
+  const from   = process.env.TWILIO_WHATSAPP_FROM;
   if (!from) throw new Error('TWILIO_WHATSAPP_FROM not set');
-
   const waTo  = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
   const msg   = await client.messages.create({ body, from, to: waTo });
   return { channel: 'whatsapp', sid: msg.sid, status: msg.status };
 }
 
-// ── Main export ───────────────────────────────────────────────────────────────
-export async function notifyRecipient(order, newStatus) {
-  const body     = buildMessage(order, newStatus);
-  const channels = (process.env.NOTIFY_CHANNELS ?? 'sms').split(',').map(s => s.trim());
-  const results  = [];
+// ── Public API ────────────────────────────────────────────────────────────────
+export async function notifyRecipient(item, address, newStatus) {
+  const body    = buildMessage(item, address, newStatus);
+  const channel = (address.preferredChannel || 'sms').toLowerCase();
 
-  for (const channel of channels) {
-    try {
-      if (channel === 'sms') {
-        const r = await sendSMS(order.recipient.phone, body);
-        results.push(r);
-        console.log(`  ✓ SMS sent to ${order.recipient.name} (${order.recipient.phone})`);
-      } else if (channel === 'whatsapp') {
-        const waNum = order.recipient.whatsapp || order.recipient.phone;
-        const r = await sendWhatsApp(waNum, body);
-        results.push(r);
-        console.log(`  ✓ WhatsApp sent to ${order.recipient.name}`);
-      }
-    } catch (err) {
-      console.error(`  ✗ Failed to send ${channel} to ${order.recipient.name}: ${err.message}`);
-      results.push({ channel, error: err.message });
+  try {
+    if (channel === 'whatsapp') {
+      const num = address.whatsapp || address.phone;
+      const r = await sendWhatsApp(num, body);
+      console.log(`  ✓ WhatsApp sent to ${address.fullName}`);
+      return r;
     }
-  }
 
-  return results;
+    if (channel === 'email') {
+      // Email channel not yet implemented — skip cleanly.
+      console.log(`  · Email channel not yet implemented for ${address.fullName}, skipping`);
+      return { channel: 'email', skipped: true };
+    }
+
+    const r = await sendSMS(address.phone, body);
+    console.log(`  ✓ SMS sent to ${address.fullName} (${address.phone})`);
+    return r;
+  } catch (err) {
+    console.error(`  ✗ ${channel} failed for ${address.fullName}: ${err.message}`);
+    throw err;
+  }
 }

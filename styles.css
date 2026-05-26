@@ -368,6 +368,34 @@ select:hover { background-color: var(--surface-alt); }
 }
 
 .person .head { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+.person .head-meta { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+
+.person .type-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: var(--accent-soft);
+  color: var(--accent-2);
+}
+
+.channel-tag {
+  display: inline-block;
+  padding: 1px 7px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  background: var(--surface-alt);
+  border: 1px solid var(--border-soft);
+  color: var(--text-muted);
+}
+
+.profit-pos { color: #047857; font-weight: 500; }
+.profit-neg { color: #b91c1c; font-weight: 500; }
 
 .person .avatar {
   width: 38px; height: 38px;

@@ -2,24 +2,24 @@
 /**
  * checker.js
  * ──────────────────────────────────────────────────────────────────────────────
- * CardTrack hourly order checker.
- * 
+ * CardTrack hourly inventory checker.
+ *
  * Run manually:    node checker.js
  * Run via cron:    0 * * * * cd /path/to/cardtrack && node checker.js >> logs/checker.log 2>&1
  * Run via npm:     npm start
- * 
+ *
  * What it does:
- *   1. Reads orders.json
- *   2. For each active order, checks the carrier tracking status
- *   3. If the status has changed, sends SMS/WhatsApp via Twilio
- *   4. Writes updated statuses back to orders.json
+ *   1. Reads inventory.json (items) and addresses.json (recipients)
+ *   2. For each active item, polls the carrier's tracking page
+ *   3. If the acquisition status has changed, sends SMS/WhatsApp via Twilio
+ *      to the recipient address (resolved by recipientAddressId)
+ *   4. Writes updated statuses back to inventory.json
  *   5. Appends a run summary to logs/checker.log
  * ──────────────────────────────────────────────────────────────────────────────
  */
 
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { existsSync }                 from 'fs';
-import { createWriteStream }          from 'fs';
 import path                           from 'path';
 import { fileURLToPath }              from 'url';
 import 'dotenv/config';
@@ -27,14 +27,15 @@ import 'dotenv/config';
 import { checkTracking, STATUS }      from './carriers.js';
 import { notifyRecipient }            from './notify.js';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ORDERS_FILE = path.join(__dirname, 'orders.json');
-const LOGS_DIR    = path.join(__dirname, 'logs');
+const __dirname       = path.dirname(fileURLToPath(import.meta.url));
+const INVENTORY_FILE  = path.join(__dirname, 'inventory.json');
+const ADDRESSES_FILE  = path.join(__dirname, 'addresses.json');
+const LOGS_DIR        = path.join(__dirname, 'logs');
 
-// ── Statuses we actively track (skip already-delivered/failed) ────────────────
+// Statuses where we keep polling. Anything else is a terminal state.
 const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
 
-// ── Which status transitions should trigger a notification ───────────────────
+// Which status transitions warrant a notification.
 const NOTIFY_ON_TRANSITION = {
   in_transit:       true,
   out_for_delivery: true,
@@ -53,117 +54,123 @@ function log(msg, level = 'INFO') {
   return line;
 }
 
-// ── Load / save orders ────────────────────────────────────────────────────────
-async function loadOrders() {
-  const raw = await readFile(ORDERS_FILE, 'utf8');
-  return JSON.parse(raw);
+// ── Load / save ───────────────────────────────────────────────────────────────
+async function loadData() {
+  const [invRaw, addrRaw] = await Promise.all([
+    readFile(INVENTORY_FILE, 'utf8'),
+    readFile(ADDRESSES_FILE, 'utf8'),
+  ]);
+  return {
+    inventory: JSON.parse(invRaw),
+    addresses: JSON.parse(addrRaw),
+  };
 }
 
-async function saveOrders(data) {
-  await writeFile(ORDERS_FILE, JSON.stringify(data, null, 2), 'utf8');
+async function saveInventory(inventory) {
+  await writeFile(INVENTORY_FILE, JSON.stringify(inventory, null, 2), 'utf8');
 }
 
-// ── Append run summary to log file ────────────────────────────────────────────
 async function writeSummaryLog(lines) {
   if (!existsSync(LOGS_DIR)) await mkdir(LOGS_DIR, { recursive: true });
   const logFile = path.join(LOGS_DIR, 'checker.log');
-  const content = lines.join('\n') + '\n';
-  await writeFile(logFile, content, { flag: 'a', encoding: 'utf8' });
+  await writeFile(logFile, lines.join('\n') + '\n', { flag: 'a', encoding: 'utf8' });
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   const runLines = [];
   const record   = (msg, level = 'INFO') => {
-    const line = log(msg, level);
-    runLines.push(line);
+    runLines.push(log(msg, level));
   };
 
   record('─'.repeat(60));
   record('CardTrack checker starting');
 
-  // Load orders
-  let data;
+  let inventory, addresses;
   try {
-    data = await loadOrders();
+    ({ inventory, addresses } = await loadData());
   } catch (err) {
-    record(`Failed to load orders.json: ${err.message}`, 'ERROR');
+    record(`Failed to load data: ${err.message}`, 'ERROR');
     process.exit(1);
   }
 
-  const orders = data.orders ?? [];
-  const active = orders.filter(o => ACTIVE_STATUSES.includes(o.status));
+  const items   = inventory.items   ?? [];
+  const addrMap = new Map((addresses.addresses ?? []).map(a => [a.id, a]));
+  const active  = items.filter(i => ACTIVE_STATUSES.includes(i.acquisitionStatus));
 
-  record(`Loaded ${orders.length} orders, ${active.length} active`);
+  record(`Loaded ${items.length} items, ${active.length} active`);
 
   if (active.length === 0) {
-    record('No active orders to check — done');
+    record('No active items to check — done');
     await writeSummaryLog(runLines);
     return;
   }
 
-  let changed  = 0;
-  let notified = 0;
-  let errors   = 0;
+  let changed = 0, notified = 0, errors = 0;
 
-  for (const order of active) {
-    // Skip if no tracking ref yet
-    if (!order.tracking?.ref) {
-      record(`  SKIP  ${order.item} — no tracking ref yet`);
+  for (const item of active) {
+    if (!item.trackingRef) {
+      record(`  SKIP  ${item.item} — no tracking ref yet`);
       continue;
     }
 
-    record(`  CHECK ${order.item} (${order.tracking.carrier} · ${order.tracking.ref})`);
+    record(`  CHECK ${item.item} (${item.carrier} · ${item.trackingRef})`);
 
     let newStatus;
     try {
-      newStatus = await checkTracking(order.tracking.carrier, order.tracking.ref);
+      newStatus = await checkTracking(item.carrier, item.trackingRef);
     } catch (err) {
-      record(`  ERROR ${order.item}: ${err.message}`, 'ERROR');
+      record(`  ERROR ${item.item}: ${err.message}`, 'ERROR');
       errors++;
       continue;
     }
 
-    const oldStatus = order.status;
-    order.lastChecked = new Date().toISOString();
+    const oldStatus = item.acquisitionStatus;
+    item.lastChecked = new Date().toISOString();
 
     if (newStatus === STATUS.UNKNOWN) {
-      record(`  SKIP  ${order.item} — status unknown (tracking may not be live yet)`);
+      record(`  SKIP  ${item.item} — status unknown (tracking may not be live yet)`);
       continue;
     }
 
     if (newStatus === oldStatus) {
-      record(`  SAME  ${order.item} — ${oldStatus} (no change)`);
+      record(`  SAME  ${item.item} — ${oldStatus} (no change)`);
       continue;
     }
 
-    // Status changed!
-    record(`  CHNG  ${order.item} — ${oldStatus} → ${newStatus}`, 'WARN');
-    order.status = newStatus;
+    record(`  CHNG  ${item.item} — ${oldStatus} → ${newStatus}`, 'WARN');
+    item.acquisitionStatus = newStatus;
+    if (newStatus === STATUS.DELIVERED && !item.dateReceived) {
+      item.dateReceived = new Date().toISOString().slice(0, 10);
+    }
     changed++;
 
-    // Notify if this transition warrants it and we haven't already notified
-    const shouldNotify = NOTIFY_ON_TRANSITION[newStatus] && order.lastNotified !== newStatus;
+    const shouldNotify = NOTIFY_ON_TRANSITION[newStatus] && item.lastNotified !== newStatus;
+    if (!shouldNotify) continue;
 
-    if (shouldNotify) {
-      record(`  NTFY  Sending notification to ${order.recipient.name}`);
-      try {
-        await notifyRecipient(order, newStatus);
-        order.lastNotified = newStatus;
-        notified++;
-      } catch (err) {
-        record(`  ERROR Notification failed: ${err.message}`, 'ERROR');
-        errors++;
-      }
+    const addr = addrMap.get(item.recipientAddressId);
+    if (!addr) {
+      record(`  ERROR no address ${item.recipientAddressId} for ${item.item}`, 'ERROR');
+      errors++;
+      continue;
+    }
+
+    record(`  NTFY  Notifying ${addr.fullName}`);
+    try {
+      await notifyRecipient(item, addr, newStatus);
+      item.lastNotified = newStatus;
+      notified++;
+    } catch (err) {
+      record(`  ERROR Notification failed: ${err.message}`, 'ERROR');
+      errors++;
     }
   }
 
-  // Save updated statuses
   try {
-    await saveOrders(data);
-    record(`Saved updated orders.json`);
+    await saveInventory(inventory);
+    record('Saved updated inventory.json');
   } catch (err) {
-    record(`Failed to save orders.json: ${err.message}`, 'ERROR');
+    record(`Failed to save inventory.json: ${err.message}`, 'ERROR');
   }
 
   record(`Done — ${active.length} checked, ${changed} changed, ${notified} notified, ${errors} errors`);

@@ -28,10 +28,10 @@ jobs:
           NOTIFY_CHANNELS: ${{ secrets.NOTIFY_CHANNELS }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 
-      - name: Commit updated orders.json
+      - name: Commit updated inventory.json
         run: |
           git config user.name "CardTrack Bot"
           git config user.email "bot@cardtrack"
-          git add orders.json
-          git diff --staged --quiet || git commit -m "chore: update order statuses [skip ci]"
+          git add cardtrack/inventory.json
+          git diff --staged --quiet || git commit -m "chore: update inventory statuses [skip ci]"
           git push
