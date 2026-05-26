@@ -12,6 +12,7 @@
   "keywords": ["pokemon", "topps", "cards", "tracking", "twilio"],
   "license": "ISC",
   "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.0.0",
     "node-fetch": "^3.0.0",
     "twilio": "^5.0.0"

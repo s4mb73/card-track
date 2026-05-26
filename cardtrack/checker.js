@@ -2,40 +2,46 @@
 /**
  * checker.js
  * ──────────────────────────────────────────────────────────────────────────────
- * CardTrack hourly inventory checker.
+ * CardTrack hourly inventory checker — Supabase-backed.
  *
- * Run manually:    node checker.js
- * Run via cron:    0 * * * * cd /path/to/cardtrack && node checker.js >> logs/checker.log 2>&1
- * Run via npm:     npm start
+ * Loads inventory + addresses from Supabase, polls active items' carrier
+ * tracking pages, sends SMS/WhatsApp via Twilio on status changes, and
+ * writes updates back to Supabase.
  *
- * What it does:
- *   1. Reads inventory.json (items) and addresses.json (recipients)
- *   2. For each active item, polls the carrier's tracking page
- *   3. If the acquisition status has changed, sends SMS/WhatsApp via Twilio
- *      to the recipient address (resolved by recipientAddressId)
- *   4. Writes updated statuses back to inventory.json
- *   5. Appends a run summary to logs/checker.log
+ * Required env: SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, plus Twilio vars
+ * for notifications (TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN,
+ * TWILIO_FROM_NUMBER, optionally TWILIO_WHATSAPP_FROM).
  * ──────────────────────────────────────────────────────────────────────────────
  */
 
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { existsSync }                 from 'fs';
-import path                           from 'path';
-import { fileURLToPath }              from 'url';
+import { createClient }   from '@supabase/supabase-js';
+import { writeFile, mkdir } from 'fs/promises';
+import { existsSync }     from 'fs';
+import path               from 'path';
+import { fileURLToPath }  from 'url';
 import 'dotenv/config';
 
-import { checkTracking, STATUS }      from './carriers.js';
-import { notifyRecipient }            from './notify.js';
+import { checkTracking, STATUS } from './carriers.js';
+import { notifyRecipient }       from './notify.js';
 
-const __dirname       = path.dirname(fileURLToPath(import.meta.url));
-const INVENTORY_FILE  = path.join(__dirname, 'inventory.json');
-const ADDRESSES_FILE  = path.join(__dirname, 'addresses.json');
-const LOGS_DIR        = path.join(__dirname, 'logs');
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const LOGS_DIR  = path.join(__dirname, 'logs');
 
-// Statuses where we keep polling. Anything else is a terminal state.
+const SUPABASE_URL              = process.env.SUPABASE_URL;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+  console.error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in env');
+  process.exit(1);
+}
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  auth: { persistSession: false },
+});
+
+// Statuses we still poll. Anything else is terminal.
 const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
 
-// Which status transitions warrant a notification.
 const NOTIFY_ON_TRANSITION = {
   in_transit:       true,
   out_for_delivery: true,
@@ -54,22 +60,6 @@ function log(msg, level = 'INFO') {
   return line;
 }
 
-// ── Load / save ───────────────────────────────────────────────────────────────
-async function loadData() {
-  const [invRaw, addrRaw] = await Promise.all([
-    readFile(INVENTORY_FILE, 'utf8'),
-    readFile(ADDRESSES_FILE, 'utf8'),
-  ]);
-  return {
-    inventory: JSON.parse(invRaw),
-    addresses: JSON.parse(addrRaw),
-  };
-}
-
-async function saveInventory(inventory) {
-  await writeFile(INVENTORY_FILE, JSON.stringify(inventory, null, 2), 'utf8');
-}
-
 async function writeSummaryLog(lines) {
   if (!existsSync(LOGS_DIR)) await mkdir(LOGS_DIR, { recursive: true });
   const logFile = path.join(LOGS_DIR, 'checker.log');
@@ -79,24 +69,26 @@ async function writeSummaryLog(lines) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
   const runLines = [];
-  const record   = (msg, level = 'INFO') => {
-    runLines.push(log(msg, level));
-  };
+  const record   = (msg, level = 'INFO') => { runLines.push(log(msg, level)); };
 
   record('─'.repeat(60));
   record('CardTrack checker starting');
 
-  let inventory, addresses;
-  try {
-    ({ inventory, addresses } = await loadData());
-  } catch (err) {
-    record(`Failed to load data: ${err.message}`, 'ERROR');
+  const [invRes, addrRes] = await Promise.all([
+    supabase.from('inventory').select('*'),
+    supabase.from('addresses').select('*'),
+  ]);
+
+  if (invRes.error || addrRes.error) {
+    record(`Failed to load data: ${invRes.error?.message || addrRes.error?.message}`, 'ERROR');
+    await writeSummaryLog(runLines);
     process.exit(1);
   }
 
-  const items   = inventory.items   ?? [];
-  const addrMap = new Map((addresses.addresses ?? []).map(a => [a.id, a]));
-  const active  = items.filter(i => ACTIVE_STATUSES.includes(i.acquisitionStatus));
+  const items     = invRes.data  ?? [];
+  const addresses = addrRes.data ?? [];
+  const addrMap   = new Map(addresses.map(a => [a.id, a]));
+  const active    = items.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status));
 
   record(`Loaded ${items.length} items, ${active.length} active`);
 
@@ -109,68 +101,73 @@ async function main() {
   let changed = 0, notified = 0, errors = 0;
 
   for (const item of active) {
-    if (!item.trackingRef) {
+    if (!item.tracking_ref) {
       record(`  SKIP  ${item.item} — no tracking ref yet`);
       continue;
     }
 
-    record(`  CHECK ${item.item} (${item.carrier} · ${item.trackingRef})`);
+    record(`  CHECK ${item.item} (${item.carrier} · ${item.tracking_ref})`);
 
     let newStatus;
     try {
-      newStatus = await checkTracking(item.carrier, item.trackingRef);
+      newStatus = await checkTracking(item.carrier, item.tracking_ref);
     } catch (err) {
       record(`  ERROR ${item.item}: ${err.message}`, 'ERROR');
       errors++;
       continue;
     }
 
-    const oldStatus = item.acquisitionStatus;
-    item.lastChecked = new Date().toISOString();
+    const oldStatus = item.acquisition_status;
+    const nowIso    = new Date().toISOString();
+    const update    = { last_checked: nowIso };
 
     if (newStatus === STATUS.UNKNOWN) {
       record(`  SKIP  ${item.item} — status unknown (tracking may not be live yet)`);
+      await supabase.from('inventory').update(update).eq('id', item.id);
       continue;
     }
 
     if (newStatus === oldStatus) {
       record(`  SAME  ${item.item} — ${oldStatus} (no change)`);
+      await supabase.from('inventory').update(update).eq('id', item.id);
       continue;
     }
 
     record(`  CHNG  ${item.item} — ${oldStatus} → ${newStatus}`, 'WARN');
-    item.acquisitionStatus = newStatus;
-    if (newStatus === STATUS.DELIVERED && !item.dateReceived) {
-      item.dateReceived = new Date().toISOString().slice(0, 10);
+    update.acquisition_status = newStatus;
+    if (newStatus === STATUS.DELIVERED && !item.date_received) {
+      update.date_received = nowIso.slice(0, 10);
     }
     changed++;
 
-    const shouldNotify = NOTIFY_ON_TRANSITION[newStatus] && item.lastNotified !== newStatus;
-    if (!shouldNotify) continue;
-
-    const addr = addrMap.get(item.recipientAddressId);
-    if (!addr) {
-      record(`  ERROR no address ${item.recipientAddressId} for ${item.item}`, 'ERROR');
-      errors++;
-      continue;
+    const shouldNotify = NOTIFY_ON_TRANSITION[newStatus] && item.last_notified !== newStatus;
+    if (shouldNotify) {
+      const addr = addrMap.get(item.recipient_address_id);
+      if (!addr) {
+        record(`  ERROR no address ${item.recipient_address_id} for ${item.item}`, 'ERROR');
+        errors++;
+      } else {
+        record(`  NTFY  Notifying ${addr.full_name}`);
+        try {
+          await notifyRecipient(item, addr, newStatus);
+          update.last_notified = newStatus;
+          notified++;
+        } catch (err) {
+          record(`  ERROR Notification failed: ${err.message}`, 'ERROR');
+          errors++;
+        }
+      }
     }
 
-    record(`  NTFY  Notifying ${addr.fullName}`);
-    try {
-      await notifyRecipient(item, addr, newStatus);
-      item.lastNotified = newStatus;
-      notified++;
-    } catch (err) {
-      record(`  ERROR Notification failed: ${err.message}`, 'ERROR');
+    const { error: upErr } = await supabase
+      .from('inventory')
+      .update(update)
+      .eq('id', item.id);
+
+    if (upErr) {
+      record(`  ERROR DB update failed for ${item.item}: ${upErr.message}`, 'ERROR');
       errors++;
     }
-  }
-
-  try {
-    await saveInventory(inventory);
-    record('Saved updated inventory.json');
-  } catch (err) {
-    record(`Failed to save inventory.json: ${err.message}`, 'ERROR');
   }
 
   record(`Done — ${active.length} checked, ${changed} changed, ${notified} notified, ${errors} errors`);

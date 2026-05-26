@@ -1,13 +1,17 @@
 /**
  * app.js
- * CardTrack dashboard — a static SPA that reads cardtrack/inventory.json
- * and cardtrack/addresses.json and renders the Inventory, Addresses,
- * Notifications, Scheduler and Email views.
- * No build step, no framework: served straight from the repo root by Vercel.
+ * CardTrack dashboard — Supabase-backed.
+ * Reads `addresses` and `inventory` tables via the public anon key.
+ * Writes happen server-side via the service-role key in checker.js;
+ * here we only read.
  */
 
-const INVENTORY_URL = 'cardtrack/inventory.json';
-const ADDRESSES_URL = 'cardtrack/addresses.json';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+const SUPABASE_URL      = 'https://bnhyocinlvdfpbhybtaw.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJuaHlvY2lubHZkZnBiaHlidGF3Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzk2Mjg0OTEsImV4cCI6MjA5NTIwNDQ5MX0.QgpvlXD5INIp56ld_Zo2Wn15Fhu5rhG8jx6CWxtKL3k';
+
+const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const STATUS_LABELS = {
   pending:          'Pending',
@@ -79,13 +83,13 @@ function carrierLabel(c) { return CARRIER_LABELS[c] || c || '—'; }
 
 function addressLines(addr) {
   if (!addr) return [];
-  return [addr.line1, addr.line2, addr.line3, addr.townCity, addr.county, addr.postcode]
+  return [addr.line1, addr.line2, addr.line3, addr.town_city, addr.county, addr.postcode]
     .map(s => String(s || '').trim())
     .filter(Boolean);
 }
 
 function shortAddress(addr) {
-  return [addr?.townCity, addr?.postcode]
+  return [addr?.town_city, addr?.postcode]
     .map(s => String(s || '').trim())
     .filter(Boolean)
     .join(', ');
@@ -122,31 +126,29 @@ function statusCell(s) {
 }
 
 function effectiveStatus(item) {
-  return item.saleStatus === 'sold' ? 'sold' : item.acquisitionStatus;
+  return item.sale_status === 'sold' ? 'sold' : item.acquisition_status;
 }
 
 function profitOf(item) {
-  if (item.saleStatus !== 'sold') return null;
-  const sale     = Number(item.salePrice)       || 0;
-  const cost     = Number(item.cost)            || 0;
-  const fees     = Number(item.fees)            || 0;
-  const shipIn   = Number(item.shippingInCost)  || 0;
-  const shipOut  = Number(item.shippingOutCost) || 0;
+  if (item.sale_status !== 'sold') return null;
+  const sale    = Number(item.sale_price)         || 0;
+  const cost    = Number(item.cost)               || 0;
+  const fees    = Number(item.fees)               || 0;
+  const shipIn  = Number(item.shipping_in_cost)   || 0;
+  const shipOut = Number(item.shipping_out_cost)  || 0;
   return sale - cost - fees - shipIn - shipOut;
 }
 
 // ── Data ──────────────────────────────────────────────────────────────────────
 async function loadData() {
   const [invRes, addrRes] = await Promise.all([
-    fetch(INVENTORY_URL, { cache: 'no-store' }),
-    fetch(ADDRESSES_URL, { cache: 'no-store' }),
+    supabase.from('inventory').select('*').order('id'),
+    supabase.from('addresses').select('*').order('id'),
   ]);
-  if (!invRes.ok)  throw new Error(`HTTP ${invRes.status} fetching ${INVENTORY_URL}`);
-  if (!addrRes.ok) throw new Error(`HTTP ${addrRes.status} fetching ${ADDRESSES_URL}`);
-  const inv  = await invRes.json();
-  const addr = await addrRes.json();
-  ITEMS       = Array.isArray(inv.items) ? inv.items : [];
-  ADDRESSES   = Array.isArray(addr.addresses) ? addr.addresses : [];
+  if (invRes.error)  throw new Error(`Inventory: ${invRes.error.message}`);
+  if (addrRes.error) throw new Error(`Addresses: ${addrRes.error.message}`);
+  ITEMS       = invRes.data  ?? [];
+  ADDRESSES   = addrRes.data ?? [];
   ADDRESS_MAP = new Map(ADDRESSES.map(a => [a.id, a]));
 }
 
@@ -154,8 +156,8 @@ async function loadData() {
 function renderSummary() {
   const total  = ITEMS.length;
   const spent  = ITEMS.reduce((s, i) => s + (Number(i.cost) || 0), 0);
-  const active = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisitionStatus)).length;
-  const sold   = ITEMS.filter(i => i.saleStatus === 'sold');
+  const active = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status)).length;
+  const sold   = ITEMS.filter(i => i.sale_status === 'sold');
   const profit = sold.reduce((s, i) => s + (profitOf(i) || 0), 0);
 
   const tiles = [
@@ -181,10 +183,10 @@ function renderInventory() {
   if (inventoryFilter === 'all') {
     filtered = ITEMS;
   } else if (inventoryFilter === 'sold') {
-    filtered = ITEMS.filter(i => i.saleStatus === 'sold');
+    filtered = ITEMS.filter(i => i.sale_status === 'sold');
   } else {
-    filtered = ITEMS.filter(i => i.acquisitionStatus === inventoryFilter
-                              && i.saleStatus !== 'sold');
+    filtered = ITEMS.filter(i => i.acquisition_status === inventoryFilter
+                              && i.sale_status !== 'sold');
   }
 
   const FILTER_KEYS = ['all', 'pending', 'in_transit', 'out_for_delivery',
@@ -196,21 +198,21 @@ function renderInventory() {
   `).join('');
 
   const rows = filtered.map(item => {
-    const url  = safeUrl(item.trackingUrl);
-    const ref  = item.trackingRef || '';
+    const url  = safeUrl(item.tracking_url);
+    const ref  = item.tracking_ref || '';
     const trackHtml = ref
       ? (url
           ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="mono">${esc(ref)}</a>`
           : `<span class="mono">${esc(ref)}</span>`)
       : '<span class="muted">—</span>';
 
-    const addr = ADDRESS_MAP.get(item.recipientAddressId);
-    const destName = addr?.fullName || '—';
+    const addr = ADDRESS_MAP.get(item.recipient_address_id);
+    const destName = addr?.full_name || '—';
     const destLoc  = shortAddress(addr);
     const status   = effectiveStatus(item);
     const profit   = profitOf(item);
 
-    const subLine = [item.category, item.setEdition].filter(Boolean).map(esc).join(' · ');
+    const subLine = [item.category, item.set_edition].filter(Boolean).map(esc).join(' · ');
 
     return `
       <tr>
@@ -267,20 +269,20 @@ function renderAddresses() {
   const el = document.getElementById('tab-addresses');
 
   const cards = ADDRESSES.map(a => {
-    const myItems   = ITEMS.filter(i => i.recipientAddressId === a.id);
+    const myItems   = ITEMS.filter(i => i.recipient_address_id === a.id);
     const totalCost = myItems.reduce((s, i) => s + (Number(i.cost) || 0), 0);
     const lines     = addressLines(a);
     const addrHtml  = lines.length
       ? lines.map(esc).join('<br>')
       : '<span class="muted">No address on file</span>';
-    const channel   = (a.preferredChannel || 'sms').toLowerCase();
+    const channel   = (a.preferred_channel || 'sms').toLowerCase();
 
     return `
       <div class="person">
         <div class="head">
-          <div class="avatar">${esc(initials(a.fullName))}</div>
+          <div class="avatar">${esc(initials(a.full_name))}</div>
           <div class="head-meta">
-            <div class="name">${esc(a.fullName)}</div>
+            <div class="name">${esc(a.full_name)}</div>
             ${a.type ? `<span class="type-tag">${esc(a.type)}</span>` : ''}
           </div>
         </div>
@@ -307,8 +309,8 @@ function renderAddresses() {
 
 // ── Notifications ─────────────────────────────────────────────────────────────
 function notifyState(item) {
-  if (!NOTIFY_TRIGGERS.includes(item.acquisitionStatus)) return { label: 'No alert', cls: 'muted' };
-  if (item.lastNotified === item.acquisitionStatus)      return { label: 'Sent',     cls: 'ok' };
+  if (!NOTIFY_TRIGGERS.includes(item.acquisition_status)) return { label: 'No alert', cls: 'muted' };
+  if (item.last_notified === item.acquisition_status)     return { label: 'Sent',     cls: 'ok' };
   return { label: 'Queued', cls: 'warn' };
 }
 
@@ -320,13 +322,13 @@ function renderNotifications() {
 
   const rows = ITEMS.map((item, i) => {
     const st   = states[i];
-    const addr = ADDRESS_MAP.get(item.recipientAddressId);
+    const addr = ADDRESS_MAP.get(item.recipient_address_id);
     return `
       <tr>
-        <td><div class="primary">${esc(addr?.fullName || '—')}</div></td>
+        <td><div class="primary">${esc(addr?.full_name || '—')}</div></td>
         <td>${esc(item.item)}</td>
-        <td>${statusCell(item.acquisitionStatus)}</td>
-        <td>${item.lastNotified ? esc(statusLabel(item.lastNotified)) : '<span class="muted">Never</span>'}</td>
+        <td>${statusCell(item.acquisition_status)}</td>
+        <td>${item.last_notified ? esc(statusLabel(item.last_notified)) : '<span class="muted">Never</span>'}</td>
         <td><span class="pill ${st.cls}">${esc(st.label)}</span></td>
       </tr>
     `;
@@ -354,17 +356,17 @@ function renderNotifications() {
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 function renderScheduler() {
   const el = document.getElementById('tab-scheduler');
-  const active = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisitionStatus));
+  const active = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status));
 
   const rows = ITEMS.map(item => {
     let note = '';
-    if (!item.trackingRef)      note = '<span class="pill warn">awaiting tracking ref</span>';
-    else if (!item.lastChecked) note = '<span class="pill muted">never checked</span>';
+    if (!item.tracking_ref)      note = '<span class="pill warn">awaiting tracking ref</span>';
+    else if (!item.last_checked) note = '<span class="pill muted">never checked</span>';
     return `
       <tr>
         <td><div class="primary">${esc(item.item)}</div></td>
-        <td>${statusCell(item.acquisitionStatus)}</td>
-        <td class="num">${esc(relTime(item.lastChecked))}</td>
+        <td>${statusCell(item.acquisition_status)}</td>
+        <td class="num">${esc(relTime(item.last_checked))}</td>
         <td>${note}</td>
       </tr>
     `;
@@ -377,6 +379,7 @@ function renderScheduler() {
       </div>
       <div class="info-row"><span class="k">Frequency</span><span>Hourly &middot; <code>0 * * * *</code></span></div>
       <div class="info-row"><span class="k">Runner</span><span>GitHub Actions &middot; <code>.github/workflows/checker.yml</code></span></div>
+      <div class="info-row"><span class="k">Store</span><span>Supabase Postgres</span></div>
       <div class="info-row"><span class="k">Active items next run</span><span class="num">${active.length}</span></div>
       <div class="info-row"><span class="k">Estimated next run</span><span class="num">${esc(nextHourlyRun())}</span></div>
     </div>
@@ -404,8 +407,8 @@ function renderEmail() {
       <div class="info-row"><span class="k">Status</span><span class="pill muted">Not connected</span></div>
       <div class="section-body">
         <p style="color: var(--text-muted); margin-bottom: 12px; font-size: 13.5px;">
-          Once connected, order confirmations from these senders would create new
-          items in <code>cardtrack/inventory.json</code> automatically.
+          Once connected, order confirmations from these senders would insert new
+          rows into the <code>inventory</code> table automatically.
         </p>
         <ul class="sources">
           ${EMAIL_SOURCES.map(s => `<li>${esc(s)}</li>`).join('')}

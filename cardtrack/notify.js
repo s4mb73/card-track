@@ -22,9 +22,9 @@ function getClient() {
 
 // ── Message templates ─────────────────────────────────────────────────────────
 function buildMessage(item, address, newStatus) {
-  const name  = address.fullName.split(' ')[0]; // first name only
+  const name  = address.full_name.split(' ')[0]; // first name only
   const label = STATUS_LABELS[newStatus] ?? newStatus;
-  const ref   = item.trackingRef;
+  const ref   = item.tracking_ref;
 
   switch (newStatus) {
     case 'out_for_delivery':
@@ -61,27 +61,27 @@ async function sendWhatsApp(to, body) {
 // ── Public API ────────────────────────────────────────────────────────────────
 export async function notifyRecipient(item, address, newStatus) {
   const body    = buildMessage(item, address, newStatus);
-  const channel = (address.preferredChannel || 'sms').toLowerCase();
+  const channel = (address.preferred_channel || 'sms').toLowerCase();
 
   try {
     if (channel === 'whatsapp') {
       const num = address.whatsapp || address.phone;
       const r = await sendWhatsApp(num, body);
-      console.log(`  ✓ WhatsApp sent to ${address.fullName}`);
+      console.log(`  ✓ WhatsApp sent to ${address.full_name}`);
       return r;
     }
 
     if (channel === 'email') {
       // Email channel not yet implemented — skip cleanly.
-      console.log(`  · Email channel not yet implemented for ${address.fullName}, skipping`);
+      console.log(`  · Email channel not yet implemented for ${address.full_name}, skipping`);
       return { channel: 'email', skipped: true };
     }
 
     const r = await sendSMS(address.phone, body);
-    console.log(`  ✓ SMS sent to ${address.fullName} (${address.phone})`);
+    console.log(`  ✓ SMS sent to ${address.full_name} (${address.phone})`);
     return r;
   } catch (err) {
-    console.error(`  ✗ ${channel} failed for ${address.fullName}: ${err.message}`);
+    console.error(`  ✗ ${channel} failed for ${address.full_name}: ${err.message}`);
     throw err;
   }
 }
