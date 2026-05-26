@@ -12,8 +12,6 @@
  *   pending | in_transit | out_for_delivery | delivered | failed | unknown
  */
 
-import fetch from 'node-fetch';
-
 // ── Tunables ──────────────────────────────────────────────────────────────────
 const REQUEST_TIMEOUT_MS = 12000; // per-request hard cap
 const MAX_ATTEMPTS       = 3;     // total tries before giving up

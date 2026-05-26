@@ -40,7 +40,6 @@ create table if not exists public.inventory (
   set_edition           text         default '',
   condition             text         default '',
   quantity              int          default 1,
-  photo_url             text         default '',
 
   -- Buying side
   source                text         default '',

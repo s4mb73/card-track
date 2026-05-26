@@ -1,20 +1,18 @@
 {
   "name": "cardtrack",
   "version": "1.0.0",
-  "description": "CardTrack hourly order checker — polls Royal Mail, Evri, DPD and fires Twilio notifications on status changes.",
+  "description": "Hourly Supabase-backed parcel tracker for Pokemon and Topps card orders, with Twilio SMS/WhatsApp notifications.",
   "type": "module",
   "main": "checker.js",
   "scripts": {
     "start": "node checker.js",
-    "check": "node checker.js",
-    "logs": "tail -f logs/checker.log"
+    "check": "node checker.js"
   },
-  "keywords": ["pokemon", "topps", "cards", "tracking", "twilio"],
+  "keywords": ["pokemon", "topps", "cards", "tracking", "supabase", "twilio"],
   "license": "ISC",
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.0.0",
-    "node-fetch": "^3.0.0",
     "twilio": "^5.0.0"
   }
 }
