@@ -56,7 +56,6 @@ const TAB_META = {
 let ITEMS = [];
 let ADDRESSES = [];
 let ADDRESS_MAP = new Map();
-let AUTH_USER = null;
 let inventoryFilter = 'all';
 
 // ── Generic helpers ───────────────────────────────────────────────────────────
@@ -217,11 +216,11 @@ function renderInventory() {
         </div>
         <div class="toolbar">
           <select id="status-filter">${options}</select>
-          ${AUTH_USER ? '<button class="btn-primary btn-add" id="add-inv">+ Add item</button>' : ''}
+          <button class="btn-primary btn-add" id="add-inv">+ Add item</button>
         </div>
       </div>
       ${filtered.length ? `
-        <table class="${AUTH_USER ? 'row-clickable' : ''}">
+        <table class="row-clickable">
           <thead>
             <tr><th>Item</th><th>Sending to</th><th>Carrier</th>
                 <th>Status</th><th>Tracking</th><th>Cost</th><th>Profit</th></tr>
@@ -236,16 +235,14 @@ function renderInventory() {
     inventoryFilter = e.target.value;
     renderInventory();
   });
-  if (AUTH_USER) {
-    document.getElementById('add-inv').addEventListener('click', () => openInventoryEditor());
-    el.querySelectorAll('tbody tr').forEach(tr => {
-      tr.addEventListener('click', e => {
-        if (e.target.closest('[data-stop]')) return;
-        const item = ITEMS.find(i => i.id === tr.dataset.id);
-        if (item) openInventoryEditor(item);
-      });
+  document.getElementById('add-inv').addEventListener('click', () => openInventoryEditor());
+  el.querySelectorAll('tbody tr').forEach(tr => {
+    tr.addEventListener('click', e => {
+      if (e.target.closest('[data-stop]')) return;
+      const item = ITEMS.find(i => i.id === tr.dataset.id);
+      if (item) openInventoryEditor(item);
     });
-  }
+  });
 }
 
 // ── Addresses ─────────────────────────────────────────────────────────────────
@@ -260,7 +257,7 @@ function renderAddresses() {
     const channel   = (a.preferred_channel || 'sms').toLowerCase();
 
     return `
-      <div class="person ${AUTH_USER ? 'clickable' : ''}" data-kind="addr" data-id="${esc(a.id)}">
+      <div class="person clickable" data-kind="addr" data-id="${esc(a.id)}">
         <div class="head">
           <div class="avatar">${esc(initials(a.full_name))}</div>
           <div class="head-meta">
@@ -286,23 +283,20 @@ function renderAddresses() {
 
   el.innerHTML = `
     <div class="section-head-bare">
-      ${AUTH_USER ? '<button class="btn-primary btn-add" id="add-addr">+ Add address</button>' : ''}
+      <button class="btn-primary btn-add" id="add-addr">+ Add address</button>
     </div>
     ${ADDRESSES.length
       ? `<div class="person-grid">${cards}</div>`
       : '<div class="empty">No addresses yet.</div>'}
   `;
 
-  if (AUTH_USER) {
-    const addBtn = document.getElementById('add-addr');
-    if (addBtn) addBtn.addEventListener('click', () => openAddressEditor());
-    el.querySelectorAll('.person').forEach(p => {
-      p.addEventListener('click', () => {
-        const a = ADDRESSES.find(x => x.id === p.dataset.id);
-        if (a) openAddressEditor(a);
-      });
+  document.getElementById('add-addr').addEventListener('click', () => openAddressEditor());
+  el.querySelectorAll('.person').forEach(p => {
+    p.addEventListener('click', () => {
+      const a = ADDRESSES.find(x => x.id === p.dataset.id);
+      if (a) openAddressEditor(a);
     });
-  }
+  });
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────────
@@ -633,41 +627,6 @@ function openInventoryEditor(existing) {
   });
 }
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
-function openLoginModal() {
-  showModal({
-    title: 'Sign in',
-    body: `
-      <div class="form-grid">
-        ${field('Email',    'email',    'email',    { value: '', required: true, wide: true })}
-        ${field('Password', 'password', 'password', { value: '', required: true, wide: true })}
-      </div>
-      <p class="muted" style="margin-top:8px;font-size:12.5px">
-        Don't have an account yet? Create one in Supabase → Authentication → Users.
-      </p>
-    `,
-    submitText: 'Sign in',
-    onSubmit: async (form) => {
-      const { email, password } = readForm(form);
-      const { error } = await supabase.auth.signInWithPassword({ email, password });
-      if (error) throw error;
-    },
-  });
-}
-
-function updateAuthUi() {
-  const btn = document.getElementById('auth-btn');
-  if (!btn) return;
-  if (AUTH_USER) {
-    btn.textContent = `Sign out (${AUTH_USER.email})`;
-    btn.onclick = async () => { await supabase.auth.signOut(); };
-  } else {
-    btn.textContent = 'Sign in';
-    btn.onclick = openLoginModal;
-  }
-  document.body.classList.toggle('authed', !!AUTH_USER);
-}
-
 // ── Nav & tabs ────────────────────────────────────────────────────────────────
 function setupNav() {
   document.querySelectorAll('.nav-btn').forEach(btn => {
@@ -711,23 +670,6 @@ async function refresh() {
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-async function init() {
-  setupNav();
-  document.getElementById('refresh').addEventListener('click', refresh);
-
-  // Initial auth state
-  const { data: { session } } = await supabase.auth.getSession();
-  AUTH_USER = session?.user ?? null;
-  updateAuthUi();
-
-  // React to auth changes
-  supabase.auth.onAuthStateChange((_event, session) => {
-    AUTH_USER = session?.user ?? null;
-    updateAuthUi();
-    renderAll();
-  });
-
-  await refresh();
-}
-
-init();
+setupNav();
+document.getElementById('refresh').addEventListener('click', refresh);
+refresh();
