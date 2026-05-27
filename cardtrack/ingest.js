@@ -185,8 +185,15 @@ async function ingest() {
   await client.mailboxOpen('INBOX');
 
   const since = new Date(Date.now() - 30 * 86400000);
-  const uids = await client.search({ since });
-  console.log(`Found ${uids.length} message(s) in the last 30 days.`);
+  // Server-side filter by sender domain so Gmail does the matching
+  // before we download anything. Huge speedup on big mailboxes — a
+  // 1000-message inbox with 10 matching orders drops from minutes of
+  // body fetches to seconds. IMAP search's `from:` is a substring
+  // match (no reply-to), so a sender that only matches via reply-to
+  // will be missed — acceptable trade for the speed, and matchesSite
+  // still runs locally as a belt-and-braces check.
+  const uids = await client.search({ since, from: site.from_domain });
+  console.log(`Found ${uids.length} message(s) from @${site.from_domain} in the last 30 days.`);
   await patchRun({ total: uids.length });
 
   let inserted = 0, skipped = 0, failed = 0, processed = 0;
