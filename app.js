@@ -74,7 +74,6 @@ const NAV_ICONS = {
   inventory:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5l6-3 6 3v7l-6 3-6-3v-7z"/><path d="M2 4.5l6 3 6-3"/><path d="M8 7.5v7"/></svg>',
   addresses:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="2.75"/><path d="M2.5 14c0-2.7 2.5-5 5.5-5s5.5 2.3 5.5 5"/></svg>',
   notifications: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5a5 5 0 1 1 10 0v3l1 2H2l1-2v-3z"/><path d="M6.5 13a1.5 1.5 0 0 0 3 0"/></svg>',
-  scheduler:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M8 5v3l2 1.5"/></svg>',
   email:         '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M2.5 5l5.5 4 5.5-4"/></svg>',
 };
 
@@ -82,7 +81,6 @@ const TAB_META = {
   inventory:     { title: 'Inventory',     sub: 'Cards in your collection — what you paid, where they live, and what they sold for.' },
   addresses:     { title: 'Addresses',     sub: 'Friends and customers — where cards are sent and who you ship to.' },
   notifications: { title: 'Notifications', sub: 'Who has been notified, and what is queued for the next check.' },
-  scheduler:     { title: 'Scheduler',     sub: 'How often the checker polls each carrier.' },
   email:         { title: 'Email',         sub: 'Ingest order confirmations from your inbox.' },
 };
 
@@ -117,21 +115,6 @@ function initials(name) {
   if (!parts.length) return '?';
   if (parts.length === 1) return parts[0][0].toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-}
-function relTime(iso) {
-  if (!iso) return '—';
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return '—';
-  const mins = Math.round((Date.now() - t) / 60000);
-  if (mins < 1) return 'just now';
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  return `${Math.round(hrs / 24)}d ago`;
-}
-function nextHourlyRun() {
-  const d = new Date(); d.setMinutes(0, 0, 0); d.setHours(d.getHours() + 1);
-  return d.toLocaleString('en-GB');
 }
 function statusCell(s) {
   return `<span class="status status-${esc(s)}"><span class="sd"></span>${esc(statusLabel(s))}</span>`;
@@ -372,44 +355,6 @@ function renderNotifications() {
           <tbody>${rows}</tbody>
         </table>
       ` : '<div class="empty">No items to notify on.</div>'}
-    </div>
-  `;
-}
-
-// ── Scheduler ─────────────────────────────────────────────────────────────────
-function renderScheduler() {
-  const el = document.getElementById('tab-scheduler');
-  const active = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status));
-  const rows = ITEMS.map(item => {
-    let note = '';
-    if (!item.tracking_ref)      note = '<span class="pill warn">awaiting tracking ref</span>';
-    else if (!item.last_checked) note = '<span class="pill muted">never checked</span>';
-    return `
-      <tr>
-        <td><div class="primary">${esc(item.item)}</div></td>
-        <td>${statusCell(item.acquisition_status)}</td>
-        <td class="num">${esc(relTime(item.last_checked))}</td>
-        <td>${note}</td>
-      </tr>
-    `;
-  }).join('');
-  el.innerHTML = `
-    <div class="section">
-      <div class="section-head"><div><h2>Schedule</h2><div class="sub">How often the checker polls each carrier.</div></div></div>
-      <div class="info-row"><span class="k">Frequency</span><span>Hourly &middot; <code>0 * * * *</code></span></div>
-      <div class="info-row"><span class="k">Runner</span><span>GitHub Actions &middot; <code>.github/workflows/checker.yml</code></span></div>
-      <div class="info-row"><span class="k">Store</span><span>Supabase Postgres</span></div>
-      <div class="info-row"><span class="k">Active items next run</span><span class="num">${active.length}</span></div>
-      <div class="info-row"><span class="k">Estimated next run</span><span class="num">${esc(nextHourlyRun())}</span></div>
-    </div>
-    <div class="section">
-      <div class="section-head"><div><h2>Last checked</h2><div class="sub">When each item was last polled.</div></div></div>
-      ${ITEMS.length ? `
-        <table>
-          <thead><tr><th>Item</th><th>Status</th><th>Last checked</th><th></th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      ` : '<div class="empty">No items scheduled.</div>'}
     </div>
   `;
 }
@@ -723,7 +668,6 @@ function renderAll() {
   renderInventory();
   renderAddresses();
   renderNotifications();
-  renderScheduler();
   renderEmail();
 }
 
