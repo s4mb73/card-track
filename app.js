@@ -824,6 +824,9 @@ function showModal({ title, body, submitText = 'Save', onSubmit, onDelete, after
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
     errEl.classList.add('hidden');
+    // Snapshot the form *before* disabling inputs — `new FormData(form)`
+    // (used by readForm inside onSubmit) skips disabled controls.
+    form.dataset.snapshot = JSON.stringify(Object.fromEntries(new FormData(form)));
     setBusy(true);
     try {
       await onSubmit(form);
@@ -967,6 +970,16 @@ function inventoryFormHtml(it = {}) {
 
 // ── CRUD: address / inventory ─────────────────────────────────────────────────
 function readForm(form) {
+  // Prefer the pre-busy snapshot if showModal captured one. After
+  // setBusy(true), the form's inputs are disabled and FormData skips them.
+  if (form.dataset.snapshot) {
+    const snap = JSON.parse(form.dataset.snapshot);
+    const data = {};
+    for (const [k, v] of Object.entries(snap)) {
+      data[k] = typeof v === 'string' ? v.trim() : v;
+    }
+    return data;
+  }
   const data = {};
   for (const [k, v] of new FormData(form)) {
     data[k] = typeof v === 'string' ? v.trim() : v;
