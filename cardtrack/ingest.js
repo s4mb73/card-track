@@ -266,7 +266,10 @@ async function ingest() {
         category: cls.category || '',
         quantity: cls.quantity || 1,
         order_reference: cls.order_reference,
-        date_ordered: cls.date_ordered || null,
+        // Email's Date: header is the authoritative order timestamp —
+        // trust it over whatever Claude extracted from the body. Fall back
+        // to Claude only if the header is missing/malformed.
+        date_ordered: (parsed.date ? parsed.date.toISOString().slice(0, 10) : cls.date_ordered) || null,
         cost: cls.cost || 0,
         carrier: '',
         tracking_ref: '',
