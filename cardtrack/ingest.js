@@ -121,7 +121,12 @@ const CLASSIFY_TOOL = {
 };
 
 async function classifyEmailWithClaude({ subject, fromName, text }) {
-  const body = String(text || '').slice(0, 12000);
+  // Topps emails are ~80% boilerplate (huge tracking links, CSS, footers).
+  // The order ref, item, cost, address, and tracking number all fit in
+  // the first ~2KB of plain text. 4KB is a comfortable margin and ~3x
+  // fewer input tokens per call than the old 12KB cap → faster
+  // responses + lower API cost.
+  const body = String(text || '').slice(0, 4000);
   const resp = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 512,
@@ -203,6 +208,30 @@ function buildAddressMatcher(addresses) {
   };
 }
 
+// Minimal concurrency limiter — `claudeLimit(() => fetch(...))` queues
+// the work and lets at most CLAUDE_CONCURRENCY tasks run at once. Avoids
+// pulling in p-limit just for this. Default 4 plays nicely with
+// Anthropic Tier 1; bump via env on higher tiers.
+const CLAUDE_CONCURRENCY = Number(process.env.CLAUDE_CONCURRENCY || 4);
+function createLimit(concurrency) {
+  let active = 0;
+  const queue = [];
+  const drain = () => {
+    if (active >= concurrency || !queue.length) return;
+    const { fn, resolve, reject } = queue.shift();
+    active++;
+    Promise.resolve().then(fn).then(resolve, reject).finally(() => {
+      active--;
+      drain();
+    });
+  };
+  return (fn) => new Promise((resolve, reject) => {
+    queue.push({ fn, resolve, reject });
+    drain();
+  });
+}
+const claudeLimit = createLimit(CLAUDE_CONCURRENCY);
+
 async function ingest() {
   const account = await loadAccount(accountId);
   const site    = await loadSite(siteId);
@@ -244,42 +273,71 @@ async function ingest() {
 
   let inserted = 0, skipped = 0, failed = 0, processed = 0;
 
+  // Phase 1 — download + locally filter. Sequential because ImapFlow's
+  // streaming fetch is fastest in-order, and the filter work is cheap.
+  const items = [];
   for await (const msg of client.fetch(uids, { source: true, envelope: true })) {
-    processed++;
-    // Reporting every message would hammer the DB on big mailboxes; tick
-    // up roughly every 1% (min every message for tiny runs).
-    if (processed === uids.length || processed % Math.max(1, Math.ceil(uids.length / 100)) === 0) {
-      await patchRun({ processed, inserted, skipped, failed });
-    }
-
     const parsed = await simpleParser(msg.source);
     const messageId = parsed.messageId || `gen_${msg.uid}@cardtrack`;
-    const subject   = parsed.subject || '(no subject)';
-    const from      = emailAddressFrom(parsed) || '(unknown)';
-
     if (await alreadyProcessed(messageId)) continue;
     if (!matchesSite(parsed, site))        continue;
+    items.push({
+      messageId, parsed,
+      baseRow: {
+        id: messageId,
+        sender: emailAddressFrom(parsed) || '(unknown)',
+        subject: parsed.subject || '(no subject)',
+        received_at: parsed.date?.toISOString() || null,
+      },
+    });
+  }
+  await client.logout();
+  console.log(`${items.length} of ${uids.length} matched the local filter; classifying with concurrency=${CLAUDE_CONCURRENCY}…`);
 
-    console.log(`→ ${from} · ${subject}`);
-
-    const baseRow = {
-      id: messageId, sender: from, subject,
-      received_at: parsed.date?.toISOString() || null,
-    };
-
-    let cls;
+  // Phase 2 — classify in parallel. Anthropic's Haiku tier handles
+  // a few concurrent requests cleanly; we tick the progress bar from
+  // inside the worker pool as each result lands so the dashboard sees
+  // live throughput.
+  const classified = await Promise.all(items.map(item => claudeLimit(async () => {
     try {
-      cls = await classifyEmailWithClaude({
-        subject,
-        fromName: parsed.from?.value?.[0]?.name || from,
-        text: parsed.text || parsed.html || '',
+      const cls = await classifyEmailWithClaude({
+        subject:  item.parsed.subject || '',
+        fromName: item.parsed.from?.value?.[0]?.name || item.baseRow.sender,
+        text:     item.parsed.text || item.parsed.html || '',
       });
+      return { item, cls, err: null };
     } catch (err) {
-      console.log(`  ✗ classify failed: ${err.message}`);
+      return { item, cls: null, err };
+    } finally {
+      processed++;
+      if (processed === items.length || processed % Math.max(1, Math.ceil(items.length / 100)) === 0) {
+        patchRun({ processed, inserted, skipped, failed }).catch(() => { /* fire-and-forget */ });
+      }
+    }
+  })));
+
+  // Phase 3 — apply serially. Order_confirmations first so any
+  // shipment/cancellation in the same batch finds its target row,
+  // regardless of which Claude call finished first.
+  classified.sort((a, b) =>
+    (a.cls?.email_type === 'order_confirmation' ? 0 : 1) -
+    (b.cls?.email_type === 'order_confirmation' ? 0 : 1)
+  );
+
+  for (const result of classified) {
+    const { item, cls, err } = result;
+    const { parsed, baseRow } = item;
+    const subject = baseRow.subject;
+    const from    = baseRow.sender;
+
+    if (err) {
+      console.log(`  ✗ classify failed for ${subject}: ${err.message}`);
       failed++;
       await recordIngestion({ ...baseRow, status: 'failed', reason: `Claude: ${err.message}` });
       continue;
     }
+
+    console.log(`→ ${from} · ${subject}`);
 
     if (cls.email_type === 'other') {
       skipped++;
@@ -390,7 +448,6 @@ async function ingest() {
     await recordIngestion({ ...baseRow, inventory_id: hits[0].id, status: 'inserted', reason: `${cls.email_type}: ${summary} (${hits.length} row${hits.length === 1 ? '' : 's'})` });
   }
 
-  await client.logout();
   console.log(`\nDone. inserted=${inserted} skipped=${skipped} failed=${failed}`);
   await patchRun({
     processed, inserted, skipped, failed,
