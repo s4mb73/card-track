@@ -61,6 +61,21 @@ create table if not exists public.inventory (
 create index if not exists inventory_recipient_idx on public.inventory(recipient_address_id);
 create index if not exists inventory_acq_status_idx on public.inventory(acquisition_status);
 
+-- Log of every order-confirmation email we've processed.
+-- The IMAP Message-ID is the primary key so a re-run never double-inserts.
+create table if not exists public.email_ingestions (
+  id           text         primary key,
+  sender       text         default '',
+  subject      text         default '',
+  received_at  timestamptz,
+  inventory_id text         references public.inventory(id) on delete set null,
+  status       text         default 'inserted',  -- inserted | skipped | failed
+  reason       text         default '',
+  ingested_at  timestamptz  default now()
+);
+
+create index if not exists email_ingestions_ingested_at_idx on public.email_ingestions(ingested_at desc);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- updated_at trigger
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -90,8 +105,9 @@ create trigger inventory_set_updated_at
 -- Writes go through the service-role key in the checker, which bypasses RLS.
 -- When you add a dashboard login later, swap "using (true)" for an auth check.
 
-alter table public.addresses enable row level security;
-alter table public.inventory enable row level security;
+alter table public.addresses        enable row level security;
+alter table public.inventory        enable row level security;
+alter table public.email_ingestions enable row level security;
 
 drop policy if exists "Public read addresses" on public.addresses;
 create policy "Public read addresses"
@@ -122,6 +138,14 @@ create policy "Anon write inventory"
   to anon, authenticated
   using (true)
   with check (true);
+
+drop policy if exists "Public read email_ingestions" on public.email_ingestions;
+create policy "Public read email_ingestions"
+  on public.email_ingestions for select
+  to anon, authenticated
+  using (true);
+-- Writes happen from the GH Actions ingest job via the service-role key,
+-- which bypasses RLS — no public write policy needed.
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Seed: current CardTrack data

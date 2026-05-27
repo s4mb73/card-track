@@ -6,13 +6,17 @@
   "main": "checker.js",
   "scripts": {
     "start": "node checker.js",
-    "check": "node checker.js"
+    "check": "node checker.js",
+    "ingest": "node ingest.js"
   },
   "keywords": ["pokemon", "topps", "cards", "tracking", "supabase", "twilio"],
   "license": "ISC",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.40.0",
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.0.0",
+    "imapflow": "^1.0.169",
+    "mailparser": "^3.7.1",
     "twilio": "^5.0.0"
   }
 }

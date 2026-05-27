@@ -66,9 +66,18 @@ const CATEGORIES    = ['Topps', 'Pokémon'];
 const QUANTITIES    = [1, 2, 3, 4];
 const NOTIFY_TRIGGERS = ['in_transit', 'out_for_delivery', 'delivered', 'failed'];
 const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
-const EMAIL_SOURCES   = [
-  'orders@topps.com', 'noreply@pokemoncenter.com', 'orders@aycd.io', 'ebay@ebay.co.uk',
+const EMAIL_ALLOWED_DOMAINS = [
+  't.shopifyemail.com',
+  'official.topps.com',
 ];
+
+const INGEST_STATUS_LABELS = {
+  inserted: 'Inserted',
+  skipped:  'Skipped',
+  failed:   'Failed',
+};
+
+let INGESTIONS = [];
 
 const NAV_ICONS = {
   inventory:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5l6-3 6 3v7l-6 3-6-3v-7z"/><path d="M2 4.5l6 3 6-3"/><path d="M8 7.5v7"/></svg>',
@@ -138,14 +147,21 @@ function weekSummary() {
 
 // ── Data loading ──────────────────────────────────────────────────────────────
 async function loadData() {
-  const [invRes, addrRes] = await Promise.all([
+  const [invRes, addrRes, ingRes] = await Promise.all([
     supabase.from('inventory').select('*').order('id'),
     supabase.from('addresses').select('*').order('id'),
+    supabase.from('email_ingestions').select('*').order('ingested_at', { ascending: false }).limit(50),
   ]);
   if (invRes.error)  throw new Error(`Inventory: ${invRes.error.message}`);
   if (addrRes.error) throw new Error(`Addresses: ${addrRes.error.message}`);
+  // email_ingestions may not exist yet (before the user runs the migration);
+  // treat that as "empty" rather than fatal.
+  if (ingRes.error && !/relation .* does not exist/i.test(ingRes.error.message)) {
+    throw new Error(`Email ingestions: ${ingRes.error.message}`);
+  }
   ITEMS       = invRes.data  ?? [];
   ADDRESSES   = addrRes.data ?? [];
+  INGESTIONS  = ingRes.data  ?? [];
   ADDRESS_MAP = new Map(ADDRESSES.map(a => [a.id, a]));
 }
 
@@ -361,16 +377,65 @@ function renderNotifications() {
 
 // ── Email ─────────────────────────────────────────────────────────────────────
 function renderEmail() {
+  const total     = INGESTIONS.length;
+  const inserted  = INGESTIONS.filter(i => i.status === 'inserted').length;
+  const skipped   = INGESTIONS.filter(i => i.status === 'skipped').length;
+  const failed    = INGESTIONS.filter(i => i.status === 'failed').length;
+  const lastRun   = INGESTIONS[0]?.ingested_at
+    ? new Date(INGESTIONS[0].ingested_at).toLocaleString('en-GB')
+    : 'never';
+
+  const rows = INGESTIONS.slice(0, 20).map(ing => {
+    const when = ing.ingested_at ? new Date(ing.ingested_at).toLocaleString('en-GB') : '—';
+    const linkedItem = ing.inventory_id ? ITEMS.find(i => i.id === ing.inventory_id) : null;
+    const itemCell = linkedItem
+      ? `<span class="primary">${esc(linkedItem.item)}</span>`
+      : ing.reason
+        ? `<span class="muted">${esc(ing.reason)}</span>`
+        : '<span class="muted">—</span>';
+    const statusPill = ing.status === 'inserted'
+      ? `<span class="pill ok">${esc(INGEST_STATUS_LABELS[ing.status])}</span>`
+      : ing.status === 'failed'
+        ? `<span class="pill warn">${esc(INGEST_STATUS_LABELS[ing.status])}</span>`
+        : `<span class="pill muted">${esc(INGEST_STATUS_LABELS[ing.status] || ing.status)}</span>`;
+    return `
+      <tr>
+        <td><div class="primary">${esc(ing.subject || '(no subject)')}</div><span class="muted">${esc(ing.sender || '')}</span></td>
+        <td>${statusPill}</td>
+        <td>${itemCell}</td>
+        <td class="num"><span class="muted">${esc(when)}</span></td>
+      </tr>
+    `;
+  }).join('');
+
   document.getElementById('tab-email').innerHTML = `
     <div class="section">
-      <div class="section-head"><div><h2>Email ingestion</h2><div class="sub">Auto-import orders from your inbox.</div></div></div>
-      <div class="info-row"><span class="k">Status</span><span class="pill muted">Not connected</span></div>
+      <div class="section-head"><div><h2>Ingestion status</h2><div class="sub">Order confirmation emails Claude has parsed into inventory.</div></div></div>
+      <div class="info-row"><span class="k">Last run</span><span>${esc(lastRun)}</span></div>
+      <div class="info-row"><span class="k">Total processed</span><span class="num">${total}</span></div>
+      <div class="info-row"><span class="k">Inserted</span><span class="num">${inserted}</span></div>
+      <div class="info-row"><span class="k">Skipped</span><span class="num">${skipped}</span></div>
+      <div class="info-row"><span class="k">Failed</span><span class="num">${failed}</span></div>
+    </div>
+
+    <div class="section">
+      <div class="section-head"><div><h2>Recent ingestions</h2><div class="sub">Last 20 emails processed.</div></div></div>
+      ${total ? `
+        <table>
+          <thead><tr><th>Email</th><th>Status</th><th>Item / reason</th><th>When</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      ` : '<div class="empty">No ingestions yet. Run the <code>CardTrack email ingest</code> workflow once secrets are set.</div>'}
+    </div>
+
+    <div class="section">
+      <div class="section-head"><div><h2>Allowed senders</h2><div class="sub">Mail outside this list is ignored.</div></div></div>
       <div class="section-body">
-        <p style="color: var(--text-muted); margin-bottom: 12px; font-size: 13.5px;">
-          Once connected, order confirmations from these senders would insert new
-          rows into the <code>inventory</code> table automatically.
+        <ul class="sources">${EMAIL_ALLOWED_DOMAINS.map(d => `<li>@${esc(d)}</li>`).join('')}</ul>
+        <p style="color: var(--text-muted); font-size: 13px; margin-top: 8px;">
+          To add a sender, edit <code>ALLOWED_DOMAINS</code> in <code>cardtrack/ingest.js</code>
+          and <code>EMAIL_ALLOWED_DOMAINS</code> in <code>app.js</code>.
         </p>
-        <ul class="sources">${EMAIL_SOURCES.map(s => `<li>${esc(s)}</li>`).join('')}</ul>
       </div>
     </div>
   `;
@@ -698,6 +763,7 @@ function subscribeRealtime() {
     .channel('cardtrack-db')
     .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, scheduleRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'addresses' }, scheduleRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'email_ingestions' }, scheduleRefresh)
     .subscribe();
 }
 
