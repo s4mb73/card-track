@@ -234,7 +234,7 @@ function renderInventory() {
     const destLoc  = shortAddress(addr);
     const status   = effectiveStatus(item);
     const profit   = profitOf(item);
-    const subLine  = [item.category, item.set_edition].filter(Boolean).map(esc).join(' · ');
+    const subLine  = esc(item.category || '');
 
     return `
       <tr data-kind="inv" data-id="${esc(item.id)}">
@@ -621,7 +621,6 @@ function inventoryFormHtml(it = {}) {
     <div class="form-grid">
       ${field('Item', 'item', 'text', { value: it.item, required: true, wide: true })}
       ${field('Category', 'category', 'select', { value: it.category || '', options: categoryOpts })}
-      ${field('Set / Edition', 'set_edition', 'text', { value: it.set_edition })}
       ${field('Quantity', 'quantity', 'select', { value: it.quantity ?? 1, options: qtyOpts })}
     </div>
     <div class="form-section-label">Order</div>
