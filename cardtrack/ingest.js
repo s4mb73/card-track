@@ -1,9 +1,11 @@
 // Gmail → Supabase order ingestion.
 //
-// Connects to Gmail over IMAP, pulls every unprocessed message from the
-// allowed senders, asks Claude Haiku to parse it into a structured order,
-// and inserts the result into `inventory`. Every processed message-id is
-// recorded in `email_ingestions` so re-runs are idempotent.
+// Usage:  node ingest.js --account=<email_accounts.id> --site=<sites.id>
+//
+// Connects to one Gmail account, pulls the last 30 days of mail matching
+// the chosen site's sender filter, asks Claude Haiku to extract a
+// structured order, and inserts it into `inventory`. Every processed
+// Message-ID is recorded in `email_ingestions` so re-runs are idempotent.
 
 import 'dotenv/config';
 import { ImapFlow } from 'imapflow';
@@ -11,47 +13,71 @@ import { simpleParser } from 'mailparser';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 
-const {
-  GMAIL_USER,
-  GMAIL_APP_PASSWORD,
-  SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY,
-  ANTHROPIC_API_KEY,
-} = process.env;
+const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY } = process.env;
 
-for (const [k, v] of Object.entries({
-  GMAIL_USER, GMAIL_APP_PASSWORD, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY,
-})) {
+for (const [k, v] of Object.entries({ SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY })) {
   if (!v) { console.error(`Missing env var: ${k}`); process.exit(1); }
+}
+
+// CLI args: --account=<id> --site=<id>
+function parseArgs() {
+  const out = {};
+  for (const arg of process.argv.slice(2)) {
+    const m = arg.match(/^--([^=]+)=(.*)$/);
+    if (m) out[m[1]] = m[2];
+  }
+  return out;
+}
+const { account: accountId, site: siteId } = parseArgs();
+if (!accountId || !siteId) {
+  console.error('Usage: node ingest.js --account=<email_accounts.id> --site=<sites.id>');
+  process.exit(1);
 }
 
 const supabase  = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } });
 const anthropic = new Anthropic({ apiKey: ANTHROPIC_API_KEY });
 
-// Domain allowlist. Match by from-address suffix; reply-to is checked as a
-// fallback for senders (like Topps via Shopify) whose `from` carries a
-// per-message alias.
-const ALLOWED_DOMAINS = [
-  't.shopifyemail.com',       // Topps store confirmations
-  'official.topps.com',       // Topps reply-to
-  // Add more later as you confirm what other senders look like:
-  // 'pokemoncenter.com',
-  // 'ebay.co.uk',
-];
-
-function emailAddressFrom(parsed) {
-  return parsed.from?.value?.[0]?.address?.toLowerCase() || '';
-}
-function emailReplyTo(parsed) {
-  return parsed.replyTo?.value?.[0]?.address?.toLowerCase() || '';
-}
-function isAllowedSender(parsed) {
-  const candidates = [emailAddressFrom(parsed), emailReplyTo(parsed)].filter(Boolean);
-  return candidates.some(addr => ALLOWED_DOMAINS.some(d => addr.endsWith(`@${d}`) || addr.endsWith(`.${d}`)));
+// Service-role bypasses RLS, so we can fetch app_password here even
+// though anon can't see it from the dashboard.
+async function loadAccount(id) {
+  const { data, error } = await supabase
+    .from('email_accounts')
+    .select('id, label, address, app_password')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(`Loading account ${id}: ${error.message}`);
+  if (!data)  throw new Error(`No email_accounts row with id=${id}`);
+  if (!data.app_password) throw new Error(`Account ${id} has no app_password set`);
+  return data;
 }
 
-// Ask Haiku to extract a structured order. The tool_use schema gives us
-// type-safe JSON back without prose-wrangling.
+async function loadSite(id) {
+  const { data, error } = await supabase
+    .from('sites')
+    .select('id, label, from_domain, subject_pattern, active')
+    .eq('id', id)
+    .maybeSingle();
+  if (error) throw new Error(`Loading site ${id}: ${error.message}`);
+  if (!data)  throw new Error(`No sites row with id=${id}`);
+  if (!data.active) throw new Error(`Site ${id} is marked inactive`);
+  return data;
+}
+
+function emailAddressFrom(parsed) { return parsed.from?.value?.[0]?.address?.toLowerCase() || ''; }
+function emailReplyTo(parsed)     { return parsed.replyTo?.value?.[0]?.address?.toLowerCase() || ''; }
+
+function matchesSite(parsed, site) {
+  const domain = site.from_domain.toLowerCase().trim();
+  const addrs  = [emailAddressFrom(parsed), emailReplyTo(parsed)].filter(Boolean);
+  const domainOk = addrs.some(a => a.endsWith(`@${domain}`) || a.endsWith(`.${domain}`));
+  if (!domainOk) return false;
+  if (site.subject_pattern) {
+    const re = new RegExp(site.subject_pattern, 'i');
+    return re.test(parsed.subject || '');
+  }
+  return true;
+}
+
 const ORDER_TOOL = {
   name: 'record_order',
   description: 'Record the order details extracted from an order-confirmation email.',
@@ -63,7 +89,7 @@ const ORDER_TOOL = {
       category:        { type: 'string',  enum: ['Topps', 'Pokémon', ''], description: 'Topps or Pokémon if you can tell, empty string otherwise.' },
       cost:            { type: 'number',  description: 'Total paid in GBP including any shipping the buyer paid. 0 if unknown.' },
       quantity:        { type: 'integer', description: 'Total items. Default 1.' },
-      order_reference: { type: 'string',  description: 'Order number from the email (e.g. UK-1208767-S). Empty if not found.' },
+      order_reference: { type: 'string',  description: 'Order number from the email. Empty if not found.' },
       date_ordered:    { type: 'string',  description: 'ISO date the order was placed (YYYY-MM-DD). Empty if not found.' },
       carrier:         { type: 'string',  enum: ['royal_mail', 'evri', 'dpd', 'yodel', 'parcelforce', ''], description: 'Carrier if explicitly mentioned. Empty otherwise.' },
       tracking_ref:    { type: 'string',  description: 'Tracking number if present in the email. Empty otherwise.' },
@@ -73,7 +99,6 @@ const ORDER_TOOL = {
 };
 
 async function parseEmailWithClaude({ subject, fromName, text }) {
-  // Trim email body to keep token cost negligible.
   const body = String(text || '').slice(0, 12000);
   const resp = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
@@ -94,14 +119,10 @@ async function parseEmailWithClaude({ subject, fromName, text }) {
   return toolUse.input;
 }
 
-function newId(prefix) {
-  return `${prefix}_${Math.random().toString(36).slice(2, 10)}`;
-}
+function newId(prefix) { return `${prefix}_${Math.random().toString(36).slice(2, 10)}`; }
 
 async function recordIngestion(row) {
-  const { error } = await supabase
-    .from('email_ingestions')
-    .upsert(row, { onConflict: 'id' });
+  const { error } = await supabase.from('email_ingestions').upsert(row, { onConflict: 'id' });
   if (error) console.error('  ✗ failed to record ingestion:', error.message);
 }
 
@@ -116,19 +137,22 @@ async function alreadyProcessed(messageId) {
 }
 
 async function ingest() {
+  const account = await loadAccount(accountId);
+  const site    = await loadSite(siteId);
+  console.log(`Account: ${account.label || account.address} <${account.address}>`);
+  console.log(`Site:    ${site.label || site.from_domain} (@${site.from_domain})`);
+
   const client = new ImapFlow({
     host: 'imap.gmail.com',
     port: 993,
     secure: true,
-    auth: { user: GMAIL_USER, pass: GMAIL_APP_PASSWORD },
+    auth: { user: account.address, pass: account.app_password },
     logger: false,
   });
 
   await client.connect();
   await client.mailboxOpen('INBOX');
 
-  // Pull the last 30 days of mail. Cheap, and we dedupe by message-id so
-  // repeat passes cost nothing in the DB.
   const since = new Date(Date.now() - 30 * 86400000);
   const uids = await client.search({ since });
   console.log(`Found ${uids.length} message(s) in the last 30 days.`);
@@ -142,11 +166,7 @@ async function ingest() {
     const from      = emailAddressFrom(parsed) || '(unknown)';
 
     if (await alreadyProcessed(messageId)) continue;
-
-    if (!isAllowedSender(parsed)) {
-      // Don't even record off-allowlist mail — it'd swamp the table.
-      continue;
-    }
+    if (!matchesSite(parsed, site))        continue;
 
     console.log(`→ ${from} · ${subject}`);
 

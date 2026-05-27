@@ -1,11 +1,16 @@
 name: CardTrack email ingest
 
-# Schedule TBD — for now only runs on demand via the Actions tab.
-# Add a cron line below when you're ready, e.g.:
-#   - cron: '0 * * * *'        # hourly
-#   - cron: '*/15 * * * *'     # every 15 min
 on:
   workflow_dispatch:
+    inputs:
+      account_id:
+        description: 'email_accounts.id (which Gmail to scrape)'
+        required: true
+        type: string
+      site_id:
+        description: 'sites.id (which sender to filter on)'
+        required: true
+        type: string
 
 jobs:
   ingest:
@@ -24,10 +29,8 @@ jobs:
         run: npm install
 
       - name: Run ingest
-        run: node ingest.js
+        run: node ingest.js --account="${{ inputs.account_id }}" --site="${{ inputs.site_id }}"
         env:
-          GMAIL_USER:                ${{ secrets.GMAIL_USER }}
-          GMAIL_APP_PASSWORD:        ${{ secrets.GMAIL_APP_PASSWORD }}
           SUPABASE_URL:              ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           ANTHROPIC_API_KEY:         ${{ secrets.ANTHROPIC_API_KEY }}

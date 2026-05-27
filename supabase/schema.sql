@@ -76,6 +76,29 @@ create table if not exists public.email_ingestions (
 
 create index if not exists email_ingestions_ingested_at_idx on public.email_ingestions(ingested_at desc);
 
+-- Gmail accounts the scraper can pull from. The `app_password` column is
+-- locked down via column-level grants below: anon can write it but not
+-- read it. The service-role key (used by the GH Actions ingest job)
+-- bypasses RLS, so the job can still fetch it.
+create table if not exists public.email_accounts (
+  id           text         primary key,
+  label        text         not null default '',
+  address      text         not null,
+  app_password text         not null default '',
+  created_at   timestamptz  default now()
+);
+
+-- Sender allowlist. The ingest job filters mail to messages whose
+-- from-address ends with `@<from_domain>` (or whose reply-to does).
+create table if not exists public.sites (
+  id              text         primary key,
+  label           text         not null default '',
+  from_domain     text         not null,
+  subject_pattern text         default '',
+  active          boolean      default true,
+  created_at      timestamptz  default now()
+);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- updated_at trigger
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -108,6 +131,8 @@ create trigger inventory_set_updated_at
 alter table public.addresses        enable row level security;
 alter table public.inventory        enable row level security;
 alter table public.email_ingestions enable row level security;
+alter table public.email_accounts   enable row level security;
+alter table public.sites            enable row level security;
 
 drop policy if exists "Public read addresses" on public.addresses;
 create policy "Public read addresses"
@@ -147,6 +172,35 @@ create policy "Public read email_ingestions"
 -- Writes happen from the GH Actions ingest job via the service-role key,
 -- which bypasses RLS — no public write policy needed.
 
+-- email_accounts: anon may write freely, but cannot read app_password
+drop policy if exists "Anon read email_accounts"  on public.email_accounts;
+drop policy if exists "Anon write email_accounts" on public.email_accounts;
+create policy "Anon read email_accounts"
+  on public.email_accounts for select
+  to anon, authenticated
+  using (true);
+create policy "Anon write email_accounts"
+  on public.email_accounts for all
+  to anon, authenticated
+  using (true)
+  with check (true);
+-- Column-level lock: SELECT on app_password is denied to anon. Anon can
+-- still INSERT/UPDATE it (so the Settings form works); readers just get
+-- a permission error if they try to fetch the column.
+revoke select (app_password) on public.email_accounts from anon, authenticated;
+
+drop policy if exists "Anon read sites"  on public.sites;
+drop policy if exists "Anon write sites" on public.sites;
+create policy "Anon read sites"
+  on public.sites for select
+  to anon, authenticated
+  using (true);
+create policy "Anon write sites"
+  on public.sites for all
+  to anon, authenticated
+  using (true)
+  with check (true);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Seed: current CardTrack data
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -161,6 +215,12 @@ values
    '8 Oakfield Road', '', '', 'Manchester', 'Greater Manchester', 'M14 6XR', 'UK', '2026-05-15'),
   ('addr_003', 'Lisa Chen',    '+447700900789', 'sms',
    'Flat 2', '27 Park Lane', '', 'Leeds', 'West Yorkshire', 'LS1 2TW', 'UK', '2026-05-15')
+on conflict (id) do nothing;
+
+insert into public.sites (id, label, from_domain, subject_pattern, active)
+values
+  ('site_topps', 'Topps UK',         't.shopifyemail.com',       '',  true),
+  ('site_pkmn',  'Pokémon Center',   'pokemoncenter.com',        '',  true)
 on conflict (id) do nothing;
 
 insert into public.inventory

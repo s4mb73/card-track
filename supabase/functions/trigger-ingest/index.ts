@@ -40,6 +40,13 @@ serve(async (req) => {
     return json({ error: 'Function is missing one of GH_TOKEN, GH_OWNER, GH_REPO' }, 500);
   }
 
+  let body: { account_id?: string; site_id?: string } = {};
+  try { body = await req.json(); } catch { /* empty body OK */ }
+  const { account_id, site_id } = body;
+  if (!account_id || !site_id) {
+    return json({ error: 'Missing account_id or site_id in request body' }, 400);
+  }
+
   const url = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`;
   const r = await fetch(url, {
     method: 'POST',
@@ -49,11 +56,11 @@ serve(async (req) => {
       'X-GitHub-Api-Version': '2022-11-28',
       'User-Agent':           'cardtrack-trigger-ingest',
     },
-    body: JSON.stringify({ ref }),
+    body: JSON.stringify({ ref, inputs: { account_id, site_id } }),
   });
 
   // workflow_dispatch returns 204 No Content on success.
-  if (r.status === 204) return json({ ok: true, workflow, ref });
+  if (r.status === 204) return json({ ok: true, workflow, ref, account_id, site_id });
 
   const detail = await r.text();
   return json({ error: `GitHub responded ${r.status}: ${detail}` }, r.status);

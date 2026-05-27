@@ -66,25 +66,25 @@ const CATEGORIES    = ['Topps', 'Pokémon'];
 const QUANTITIES    = [1, 2, 3, 4];
 const NOTIFY_TRIGGERS = ['in_transit', 'out_for_delivery', 'delivered', 'failed'];
 const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
-const EMAIL_ALLOWED_DOMAINS = [
-  't.shopifyemail.com',
-  'official.topps.com',
-];
-
 const INGEST_STATUS_LABELS = {
   inserted: 'Inserted',
   skipped:  'Skipped',
   failed:   'Failed',
 };
 
-let INGESTIONS = [];
-let emailFilter = 'all';  // 'all' | 'inserted' | 'skipped' — filters Recent activity table
+let INGESTIONS     = [];
+let EMAIL_ACCOUNTS = [];
+let SITES          = [];
+let emailFilter    = 'all';     // 'all' | 'inserted' | 'skipped' — filters Recent activity table
+let selectedAccount = '';       // Email tab dropdowns; persisted in localStorage
+let selectedSite    = '';
 
 const NAV_ICONS = {
   inventory:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5l6-3 6 3v7l-6 3-6-3v-7z"/><path d="M2 4.5l6 3 6-3"/><path d="M8 7.5v7"/></svg>',
   addresses:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="6" r="2.75"/><path d="M2.5 14c0-2.7 2.5-5 5.5-5s5.5 2.3 5.5 5"/></svg>',
   notifications: '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6.5a5 5 0 1 1 10 0v3l1 2H2l1-2v-3z"/><path d="M6.5 13a1.5 1.5 0 0 0 3 0"/></svg>',
   email:         '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="12" height="9" rx="1.5"/><path d="M2.5 5l5.5 4 5.5-4"/></svg>',
+  settings:      '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2"/><path d="M8 1.5v2M8 12.5v2M14.5 8h-2M3.5 8h-2M12.6 3.4l-1.4 1.4M4.8 11.2l-1.4 1.4M12.6 12.6l-1.4-1.4M4.8 4.8L3.4 3.4"/></svg>',
 };
 
 const TAB_META = {
@@ -92,6 +92,7 @@ const TAB_META = {
   addresses:     { title: 'Addresses',     sub: 'Friends and customers — where cards are sent and who you ship to.' },
   notifications: { title: 'Notifications', sub: 'Who has been notified, and what is queued for the next check.' },
   email:         { title: 'Email',         sub: 'Ingest order confirmations from your inbox.' },
+  settings:      { title: 'Settings',      sub: 'Gmail accounts and sender sites used by the email scraper.' },
 };
 
 let ITEMS = [];
@@ -147,29 +148,37 @@ function weekSummary() {
 }
 
 // ── Data loading ──────────────────────────────────────────────────────────────
+// Match "missing table" errors from both Supabase REST and Postgres so a
+// freshly-cloned database (before the migration is run) doesn't break the UI.
+function isMissingTableError(err) {
+  if (!err) return false;
+  return (
+    /relation .* does not exist/i.test(err.message || '') ||
+    /could not find the table/i.test(err.message || '')   ||
+    err.code === '42P01' || err.code === 'PGRST205'
+  );
+}
+
 async function loadData() {
-  const [invRes, addrRes, ingRes] = await Promise.all([
+  const [invRes, addrRes, ingRes, acctRes, siteRes] = await Promise.all([
     supabase.from('inventory').select('*').order('id'),
     supabase.from('addresses').select('*').order('id'),
     supabase.from('email_ingestions').select('*').order('ingested_at', { ascending: false }).limit(50),
+    // Anon can't read app_password, so we explicitly request only safe columns.
+    supabase.from('email_accounts').select('id, label, address, created_at').order('created_at'),
+    supabase.from('sites').select('*').order('label'),
   ]);
   if (invRes.error)  throw new Error(`Inventory: ${invRes.error.message}`);
   if (addrRes.error) throw new Error(`Addresses: ${addrRes.error.message}`);
-  // email_ingestions may not exist yet (before the user runs the migration);
-  // treat that as "empty" rather than fatal. Supabase REST and direct
-  // Postgres word the missing-table error differently, so match both.
-  const ingMissing = ingRes.error && (
-    /relation .* does not exist/i.test(ingRes.error.message) ||
-    /could not find the table/i.test(ingRes.error.message)   ||
-    ingRes.error.code === '42P01' || ingRes.error.code === 'PGRST205'
-  );
-  if (ingRes.error && !ingMissing) {
-    throw new Error(`Email ingestions: ${ingRes.error.message}`);
-  }
-  ITEMS       = invRes.data  ?? [];
-  ADDRESSES   = addrRes.data ?? [];
-  INGESTIONS  = ingRes.data  ?? [];
-  ADDRESS_MAP = new Map(ADDRESSES.map(a => [a.id, a]));
+  if (ingRes.error  && !isMissingTableError(ingRes.error))  throw new Error(`Email ingestions: ${ingRes.error.message}`);
+  if (acctRes.error && !isMissingTableError(acctRes.error)) throw new Error(`Email accounts: ${acctRes.error.message}`);
+  if (siteRes.error && !isMissingTableError(siteRes.error)) throw new Error(`Sites: ${siteRes.error.message}`);
+  ITEMS          = invRes.data  ?? [];
+  ADDRESSES      = addrRes.data ?? [];
+  INGESTIONS     = ingRes.data  ?? [];
+  EMAIL_ACCOUNTS = acctRes.data ?? [];
+  SITES          = siteRes.data ?? [];
+  ADDRESS_MAP    = new Map(ADDRESSES.map(a => [a.id, a]));
 }
 
 // ── KPI tiles ─────────────────────────────────────────────────────────────────
@@ -413,6 +422,20 @@ function renderEmail() {
     </button>
   `;
 
+  // Initialise selections to first row if unset / invalid (e.g. row was deleted).
+  if (!EMAIL_ACCOUNTS.find(a => a.id === selectedAccount)) selectedAccount = EMAIL_ACCOUNTS[0]?.id || '';
+  if (!SITES.find(s => s.id === selectedSite))             selectedSite    = SITES[0]?.id || '';
+
+  const accountOptions = EMAIL_ACCOUNTS.map(a =>
+    `<option value="${esc(a.id)}" ${a.id === selectedAccount ? 'selected' : ''}>${esc(a.label || a.address)}</option>`).join('');
+  const siteOptions = SITES.filter(s => s.active !== false).map(s =>
+    `<option value="${esc(s.id)}" ${s.id === selectedSite ? 'selected' : ''}>${esc(s.label || s.from_domain)}</option>`).join('');
+
+  const canRun = !!(selectedAccount && selectedSite);
+  const setupHint = !EMAIL_ACCOUNTS.length || !SITES.length
+    ? `<div class="empty">Add a Gmail account and a site in <a href="#" data-go-settings>Settings</a> first.</div>`
+    : '';
+
   // 1. Header strip ---------------------------------------------------------
   const headerHtml = `
     <div class="section">
@@ -421,8 +444,17 @@ function renderEmail() {
           <h2>Email ingestion</h2>
           <div class="sub">Last run: ${esc(lastRun)}</div>
         </div>
-        <button class="btn-primary btn-add" id="run-ingest">Run now</button>
+        <div class="toolbar">
+          <select id="run-account" ${EMAIL_ACCOUNTS.length ? '' : 'disabled'}>
+            ${EMAIL_ACCOUNTS.length ? accountOptions : '<option>No accounts</option>'}
+          </select>
+          <select id="run-site" ${SITES.length ? '' : 'disabled'}>
+            ${SITES.length ? siteOptions : '<option>No sites</option>'}
+          </select>
+          <button class="btn-primary btn-add" id="run-ingest" ${canRun ? '' : 'disabled'}>Run now</button>
+        </div>
       </div>
+      ${setupHint}
       <div id="run-ingest-status" class="run-status" style="display:none"></div>
     </div>
   `;
@@ -522,23 +554,19 @@ function renderEmail() {
     </div>
   `;
 
-  // 5. Footer ---------------------------------------------------------------
-  const footerHtml = `
-    <div class="section">
-      <div class="section-head"><div><h2>Allowed senders</h2><div class="sub">Mail outside this list is ignored.</div></div></div>
-      <div class="section-body">
-        <ul class="sources">${EMAIL_ALLOWED_DOMAINS.map(d => `<li>@${esc(d)}</li>`).join('')}</ul>
-        <p style="color: var(--text-muted); font-size: 13px; margin-top: 8px;">
-          To add a sender, edit <code>ALLOWED_DOMAINS</code> in <code>cardtrack/ingest.js</code>
-          and <code>EMAIL_ALLOWED_DOMAINS</code> in <code>app.js</code>.
-        </p>
-      </div>
-    </div>
-  `;
+  el.innerHTML = headerHtml + needsHtml + failedHtml + activityHtml;
 
-  el.innerHTML = headerHtml + needsHtml + failedHtml + activityHtml + footerHtml;
+  const accountSel = document.getElementById('run-account');
+  const siteSel    = document.getElementById('run-site');
+  if (accountSel) accountSel.addEventListener('change', e => { selectedAccount = e.target.value; });
+  if (siteSel)    siteSel.addEventListener('change',    e => { selectedSite    = e.target.value; });
 
-  document.getElementById('run-ingest').addEventListener('click', triggerIngest);
+  const runBtn = document.getElementById('run-ingest');
+  if (runBtn) runBtn.addEventListener('click', triggerIngest);
+
+  el.querySelectorAll('[data-go-settings]').forEach(a => {
+    a.addEventListener('click', e => { e.preventDefault(); switchTab('settings'); });
+  });
 
   el.querySelectorAll('.chip').forEach(c => {
     c.addEventListener('click', () => {
@@ -558,24 +586,31 @@ function renderEmail() {
 async function triggerIngest() {
   const btn    = document.getElementById('run-ingest');
   const status = document.getElementById('run-ingest-status');
+  if (!selectedAccount || !selectedSite) {
+    status.style.display = 'block';
+    status.className = 'run-status warn';
+    status.textContent = 'Pick a Gmail account and a site first.';
+    return;
+  }
   btn.disabled = true;
   btn.textContent = 'Running…';
   status.style.display = 'block';
   status.className = 'run-status muted';
-  status.textContent = 'Asking GitHub to start the workflow…';
+  const acct = EMAIL_ACCOUNTS.find(a => a.id === selectedAccount);
+  const site = SITES.find(s => s.id === selectedSite);
+  status.textContent = `Starting workflow for ${acct?.label || acct?.address} × ${site?.label || site?.from_domain}…`;
 
   try {
-    const { data, error } = await supabase.functions.invoke('trigger-ingest', { method: 'POST' });
-    // `invoke` flags non-2xx as `error`. If the function returned a JSON body
-    // with `error`, surface that — it's the actual GitHub failure reason.
+    const { data, error } = await supabase.functions.invoke('trigger-ingest', {
+      method: 'POST',
+      body:   { account_id: selectedAccount, site_id: selectedSite },
+    });
     if (error) {
       const detail = data?.error || error.message || 'Unknown error';
       throw new Error(detail);
     }
     status.className = 'run-status ok';
     status.textContent = 'Workflow started. New ingestions will appear here in ~30 seconds.';
-    // The realtime channel will refresh the dashboard when rows are inserted;
-    // we just re-enable the button after a short cooldown.
     setTimeout(() => { btn.disabled = false; btn.textContent = 'Run now'; }, 5000);
   } catch (err) {
     status.className = 'run-status warn';
@@ -583,6 +618,172 @@ async function triggerIngest() {
     btn.disabled = false;
     btn.textContent = 'Run now';
   }
+}
+
+function switchTab(tab) {
+  document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === `tab-${tab}`));
+  const meta = TAB_META[tab] || {};
+  document.getElementById('page-title').textContent = meta.title || '';
+  document.getElementById('page-sub').textContent   = meta.sub   || '';
+}
+
+// ── Settings ──────────────────────────────────────────────────────────────────
+function renderSettings() {
+  const el = document.getElementById('tab-settings');
+
+  const accountRows = EMAIL_ACCOUNTS.map(a => `
+    <tr data-kind="acct" data-id="${esc(a.id)}">
+      <td><div class="primary">${esc(a.label || a.address)}</div>${a.label ? `<span class="muted">${esc(a.address)}</span>` : ''}</td>
+      <td><span class="muted">••••••••</span></td>
+    </tr>
+  `).join('');
+
+  const siteRows = SITES.map(s => `
+    <tr data-kind="site" data-id="${esc(s.id)}">
+      <td><div class="primary">${esc(s.label || s.from_domain)}</div>${s.label ? `<span class="muted mono">@${esc(s.from_domain)}</span>` : ''}</td>
+      <td>${s.subject_pattern ? `<span class="mono">${esc(s.subject_pattern)}</span>` : '<span class="muted">—</span>'}</td>
+      <td>${s.active === false ? '<span class="pill muted">Inactive</span>' : '<span class="pill ok">Active</span>'}</td>
+    </tr>
+  `).join('');
+
+  el.innerHTML = `
+    <div class="section">
+      <div class="section-head">
+        <div>
+          <h2>Gmail accounts</h2>
+          <div class="sub">Mailboxes the scraper can read. The app password is stored encrypted-at-rest and never sent back to the browser.</div>
+        </div>
+        <button class="btn-primary btn-add" id="add-acct">+ Add account</button>
+      </div>
+      ${EMAIL_ACCOUNTS.length ? `
+        <table class="row-clickable">
+          <thead><tr><th>Account</th><th>App password</th></tr></thead>
+          <tbody>${accountRows}</tbody>
+        </table>
+      ` : '<div class="empty">No Gmail accounts yet. Add one to enable scraping.</div>'}
+    </div>
+
+    <div class="section">
+      <div class="section-head">
+        <div>
+          <h2>Sites</h2>
+          <div class="sub">Senders the scraper accepts. Mail from any other domain is ignored.</div>
+        </div>
+        <button class="btn-primary btn-add" id="add-site">+ Add site</button>
+      </div>
+      ${SITES.length ? `
+        <table class="row-clickable">
+          <thead><tr><th>Site</th><th>Subject filter</th><th>Status</th></tr></thead>
+          <tbody>${siteRows}</tbody>
+        </table>
+      ` : '<div class="empty">No sites configured.</div>'}
+    </div>
+  `;
+
+  document.getElementById('add-acct').addEventListener('click', () => openEmailAccountEditor());
+  document.getElementById('add-site').addEventListener('click', () => openSiteEditor());
+
+  el.querySelectorAll('tr[data-kind="acct"]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const a = EMAIL_ACCOUNTS.find(x => x.id === tr.dataset.id);
+      if (a) openEmailAccountEditor(a);
+    });
+  });
+  el.querySelectorAll('tr[data-kind="site"]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const s = SITES.find(x => x.id === tr.dataset.id);
+      if (s) openSiteEditor(s);
+    });
+  });
+}
+
+function emailAccountFormHtml(a = {}) {
+  const editing = !!a.id;
+  return `
+    <div class="form-grid">
+      ${field('Label',         'label',        'text',     { value: a.label,   wide: true })}
+      ${field('Gmail address', 'address',      'email',    { value: a.address, required: true, wide: true })}
+      ${field(editing ? 'New app password (leave blank to keep current)' : 'App password',
+              'app_password', 'password', { value: '', required: !editing, wide: true })}
+    </div>
+    <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 8px;">
+      Generate one at <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noopener">myaccount.google.com/apppasswords</a>. Remove spaces before pasting.
+    </p>
+  `;
+}
+
+function openEmailAccountEditor(existing) {
+  const editing = !!existing;
+  showModal({
+    title: editing ? 'Edit Gmail account' : 'Add Gmail account',
+    body:  emailAccountFormHtml(existing || {}),
+    submitText: editing ? 'Save changes' : 'Add account',
+    onSubmit: async (form) => {
+      const data = readForm(form);
+      // Strip whitespace from the app password — Google shows it with spaces.
+      if (data.app_password) data.app_password = data.app_password.replace(/\s+/g, '');
+      if (editing) {
+        // Don't overwrite the password with blank — that's the "keep current" path.
+        if (!data.app_password) delete data.app_password;
+        const { error } = await supabase.from('email_accounts').update(data).eq('id', existing.id);
+        if (error) throw error;
+      } else {
+        data.id = newId('acct');
+        const { error } = await supabase.from('email_accounts').insert(data);
+        if (error) throw error;
+      }
+    },
+    onDelete: editing
+      ? async () => {
+          const { error } = await supabase.from('email_accounts').delete().eq('id', existing.id);
+          if (error) throw error;
+        }
+      : null,
+  });
+}
+
+function siteFormHtml(s = {}) {
+  return `
+    <div class="form-grid">
+      ${field('Label',           'label',           'text', { value: s.label, required: true, wide: true })}
+      ${field('From domain',     'from_domain',    'text', { value: s.from_domain, required: true, wide: true })}
+      ${field('Subject filter (optional regex)', 'subject_pattern', 'text', { value: s.subject_pattern, wide: true })}
+      ${field('Active', 'active', 'select', { value: s.active === false ? 'false' : 'true', options: [{ value: 'true', label: 'Active' }, { value: 'false', label: 'Inactive' }], wide: true })}
+    </div>
+    <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 8px;">
+      From domain matches the sender's domain suffix — e.g. <code>t.shopifyemail.com</code> matches
+      <code>store+1234@t.shopifyemail.com</code>. Leave subject filter blank to accept any subject.
+    </p>
+  `;
+}
+
+function openSiteEditor(existing) {
+  const editing = !!existing;
+  showModal({
+    title: editing ? 'Edit site' : 'Add site',
+    body:  siteFormHtml(existing || {}),
+    submitText: editing ? 'Save changes' : 'Add site',
+    onSubmit: async (form) => {
+      const data = readForm(form);
+      data.active      = data.active !== 'false';
+      data.from_domain = (data.from_domain || '').replace(/^@/, '').toLowerCase();
+      if (editing) {
+        const { error } = await supabase.from('sites').update(data).eq('id', existing.id);
+        if (error) throw error;
+      } else {
+        data.id = newId('site');
+        const { error } = await supabase.from('sites').insert(data);
+        if (error) throw error;
+      }
+    },
+    onDelete: editing
+      ? async () => {
+          const { error } = await supabase.from('sites').delete().eq('id', existing.id);
+          if (error) throw error;
+        }
+      : null,
+  });
 }
 
 // ── Modal infrastructure ──────────────────────────────────────────────────────
@@ -862,12 +1063,7 @@ function setupNav() {
   document.getElementById('nav').addEventListener('click', e => {
     const btn = e.target.closest('.nav-btn');
     if (!btn) return;
-    const tab = btn.dataset.tab;
-    document.querySelectorAll('.nav-btn').forEach(b => b.classList.toggle('active', b === btn));
-    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === `tab-${tab}`));
-    const meta = TAB_META[tab] || {};
-    document.getElementById('page-title').textContent = meta.title || '';
-    document.getElementById('page-sub').textContent   = meta.sub   || '';
+    switchTab(btn.dataset.tab);
   });
 }
 
@@ -878,6 +1074,7 @@ function renderAll() {
   renderAddresses();
   renderNotifications();
   renderEmail();
+  renderSettings();
 }
 
 async function refresh() {
@@ -908,6 +1105,8 @@ function subscribeRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, scheduleRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'addresses' }, scheduleRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'email_ingestions' }, scheduleRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'email_accounts' },   scheduleRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'sites' },             scheduleRefresh)
     .subscribe();
 }
 
