@@ -111,10 +111,12 @@ const CLASSIFY_TOOL = {
       cost:            { type: 'number',  description: 'Total paid in GBP including shipping. 0 unless email_type=order_confirmation.' },
       quantity:        { type: 'integer', description: 'Total items. 1 by default for order_confirmation, 0 otherwise.' },
       date_ordered:    { type: 'string',  description: 'YYYY-MM-DD the order was placed. Empty unless email_type=order_confirmation.' },
+      recipient_name:  { type: 'string',  description: 'Full name on the shipping address. Empty unless email_type=order_confirmation.' },
+      recipient_postcode: { type: 'string', description: 'Postcode of the shipping address (e.g. "WA3 5NU"). Empty unless email_type=order_confirmation.' },
       carrier:         { type: 'string',  enum: ['royal_mail', 'evri', 'dpd', 'yodel', 'parcelforce', ''], description: 'Carrier mentioned in the shipping email. Empty unless email_type=shipment.' },
       tracking_ref:    { type: 'string',  description: 'Tracking number from the shipping email. Empty unless email_type=shipment.' },
     },
-    required: ['email_type', 'order_reference', 'item', 'category', 'cost', 'quantity', 'date_ordered', 'carrier', 'tracking_ref'],
+    required: ['email_type', 'order_reference', 'item', 'category', 'cost', 'quantity', 'date_ordered', 'recipient_name', 'recipient_postcode', 'carrier', 'tracking_ref'],
   },
 };
 
@@ -163,6 +165,29 @@ async function patchRun(fields) {
   if (error) console.error('  ✗ run patch failed:', error.message);
 }
 
+// Address auto-matcher. Loaded once per run; matches a recipient
+// name + postcode against the existing `addresses` table.
+//   1. Exact (case + whitespace insensitive) match on postcode + name → that ID
+//   2. Single postcode match, no name match → still link (sole occupant)
+//   3. Multiple postcode matches with no name match → leave null (ambiguous)
+const normPostcode = (s) => String(s || '').replace(/\s+/g, '').toUpperCase();
+const normName     = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+function buildAddressMatcher(addresses) {
+  return function findMatch(name, postcode) {
+    if (!postcode) return null;
+    const pc = normPostcode(postcode);
+    const nm = normName(name);
+    const pcMatches = addresses.filter(a => normPostcode(a.postcode) === pc);
+    if (!pcMatches.length) return null;
+    if (nm) {
+      const named = pcMatches.find(a => normName(a.full_name) === nm);
+      if (named) return named.id;
+    }
+    return pcMatches.length === 1 ? pcMatches[0].id : null;
+  };
+}
+
 async function ingest() {
   const account = await loadAccount(accountId);
   const site    = await loadSite(siteId);
@@ -172,6 +197,12 @@ async function ingest() {
   await supabase.from('ingest_runs').insert({
     id: runId, account_id: accountId, site_id: siteId, status: 'running',
   });
+
+  const { data: addrs, error: addrErr } = await supabase
+    .from('addresses').select('id, full_name, postcode');
+  if (addrErr) console.warn(`  · couldn't load addresses for matching: ${addrErr.message}`);
+  const findAddress = buildAddressMatcher(addrs || []);
+  console.log(`Loaded ${addrs?.length || 0} address(es) for auto-matching.`);
 
   const client = new ImapFlow({
     host: 'imap.gmail.com',
@@ -211,8 +242,10 @@ async function ingest() {
     const subject   = parsed.subject || '(no subject)';
     const from      = emailAddressFrom(parsed) || '(unknown)';
 
-    if (await alreadyProcessed(messageId)) continue;
-    if (!matchesSite(parsed, site))        continue;
+    // Dedup against email_ingestions disabled — re-runs are expected to
+    // re-process every message during testing. Re-enable by uncommenting:
+    //   if (await alreadyProcessed(messageId)) continue;
+    if (!matchesSite(parsed, site)) continue;
 
     console.log(`→ ${from} · ${subject}`);
 
@@ -247,16 +280,17 @@ async function ingest() {
     }
 
     if (cls.email_type === 'order_confirmation') {
-      // Dedupe: if we've already ingested an inventory row with this
-      // order_reference (e.g. user re-ran the scrape on a wider window
-      // or the same email landed twice), don't double-insert.
-      const { data: dup } = await supabase
-        .from('inventory').select('id').eq('order_reference', cls.order_reference).maybeSingle();
-      if (dup) {
-        skipped++;
-        console.log(`  · order ${cls.order_reference} already in inventory (${dup.id})`);
-        await recordIngestion({ ...baseRow, inventory_id: dup.id, status: 'skipped', reason: `order ${cls.order_reference} already in inventory` });
-        continue;
+      // order_reference dedup against inventory disabled for testing.
+      // Re-enable with:
+      //   const { data: dup } = await supabase.from('inventory')
+      //     .select('id').eq('order_reference', cls.order_reference).maybeSingle();
+      //   if (dup) { skipped++; continue; }
+
+      const matchedAddressId = findAddress(cls.recipient_name, cls.recipient_postcode);
+      if (matchedAddressId) {
+        console.log(`  · matched address ${matchedAddressId} for ${cls.recipient_name || '(no name)'} @ ${cls.recipient_postcode || '(no postcode)'}`);
+      } else if (cls.recipient_postcode) {
+        console.log(`  · no address match for ${cls.recipient_name || '(no name)'} @ ${cls.recipient_postcode}`);
       }
 
       const inventoryId  = newId('inv');
@@ -274,7 +308,7 @@ async function ingest() {
         carrier: '',
         tracking_ref: '',
         acquisition_status: 'confirmed',
-        recipient_address_id: null,
+        recipient_address_id: matchedAddressId,
       };
       const { error: insErr } = await supabase.from('inventory').insert(inventoryRow);
       if (insErr) {
