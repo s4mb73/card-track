@@ -108,7 +108,7 @@ const CLASSIFY_TOOL = {
       },
       item:            { type: 'string',  description: 'Short product name. Combine multiple line items with " + ". Empty unless email_type=order_confirmation.' },
       category:        { type: 'string',  enum: ['Topps', 'Pokémon', ''], description: 'Topps or Pokémon if obvious from sender or product. Empty otherwise.' },
-      cost:            { type: 'number',  description: 'Total paid in GBP including shipping. 0 unless email_type=order_confirmation.' },
+      cost:            { type: 'number',  description: 'Final amount paid in GBP, read from the explicit "Total" line at the bottom of the order summary (e.g. "Total: £220.00 GBP"). UK Shopify emails list Subtotal + Shipping + Taxes for breakdown, but the Taxes amount is already INCLUDED in the Subtotal (UK prices are VAT-inclusive). Never sum Subtotal + Taxes — that double-counts VAT. If no Total line exists, use the Subtotal. 0 unless email_type=order_confirmation.' },
       quantity:        { type: 'integer', description: 'Total items. 1 by default for order_confirmation, 0 otherwise.' },
       date_ordered:    { type: 'string',  description: 'YYYY-MM-DD the order was placed. Empty unless email_type=order_confirmation.' },
       recipient_name:  { type: 'string',  description: 'Full name on the shipping address. Empty unless email_type=order_confirmation.' },
@@ -131,6 +131,10 @@ async function classifyEmailWithClaude({ subject, fromName, text }) {
       role: 'user',
       content:
         `Classify this email and extract any relevant fields.\n\n` +
+        `Important: when extracting "cost" for order_confirmation emails, ` +
+        `read the explicit Total line at the bottom of the order summary ` +
+        `(e.g. "Total: £220.00 GBP"). UK prices are VAT-inclusive — Taxes ` +
+        `are already part of the Subtotal, never add them on top.\n\n` +
         `From: ${fromName}\nSubject: ${subject}\n\n${body}`,
     }],
   });
