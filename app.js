@@ -416,12 +416,16 @@ function renderEmail() {
 
   document.getElementById('tab-email').innerHTML = `
     <div class="section">
-      <div class="section-head"><div><h2>Ingestion status</h2><div class="sub">Order confirmation emails Claude has parsed into inventory.</div></div></div>
+      <div class="section-head">
+        <div><h2>Ingestion status</h2><div class="sub">Order confirmation emails Claude has parsed into inventory.</div></div>
+        <button class="btn-primary btn-add" id="run-ingest">Run now</button>
+      </div>
       <div class="info-row"><span class="k">Last run</span><span>${esc(lastRun)}</span></div>
       <div class="info-row"><span class="k">Total processed</span><span class="num">${total}</span></div>
       <div class="info-row"><span class="k">Inserted</span><span class="num">${inserted}</span></div>
       <div class="info-row"><span class="k">Skipped</span><span class="num">${skipped}</span></div>
       <div class="info-row"><span class="k">Failed</span><span class="num">${failed}</span></div>
+      <div id="run-ingest-status" class="run-status" style="display:none"></div>
     </div>
 
     <div class="section">
@@ -445,6 +449,38 @@ function renderEmail() {
       </div>
     </div>
   `;
+
+  document.getElementById('run-ingest').addEventListener('click', triggerIngest);
+}
+
+async function triggerIngest() {
+  const btn    = document.getElementById('run-ingest');
+  const status = document.getElementById('run-ingest-status');
+  btn.disabled = true;
+  btn.textContent = 'Running…';
+  status.style.display = 'block';
+  status.className = 'run-status muted';
+  status.textContent = 'Asking GitHub to start the workflow…';
+
+  try {
+    const { data, error } = await supabase.functions.invoke('trigger-ingest', { method: 'POST' });
+    // `invoke` flags non-2xx as `error`. If the function returned a JSON body
+    // with `error`, surface that — it's the actual GitHub failure reason.
+    if (error) {
+      const detail = data?.error || error.message || 'Unknown error';
+      throw new Error(detail);
+    }
+    status.className = 'run-status ok';
+    status.textContent = 'Workflow started. New ingestions will appear here in ~30 seconds.';
+    // The realtime channel will refresh the dashboard when rows are inserted;
+    // we just re-enable the button after a short cooldown.
+    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run now'; }, 5000);
+  } catch (err) {
+    status.className = 'run-status warn';
+    status.textContent = `Failed to trigger: ${err.message}`;
+    btn.disabled = false;
+    btn.textContent = 'Run now';
+  }
 }
 
 // ── Modal infrastructure ──────────────────────────────────────────────────────
