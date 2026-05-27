@@ -136,11 +136,24 @@ async function alreadyProcessed(messageId) {
   return !!data;
 }
 
+// One row per run. Live progress lives in this table so the dashboard
+// can render a bar via realtime subscription, without us having to plumb
+// a job id back from the fire-and-forget HTTP call.
+const runId = `run_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+async function patchRun(fields) {
+  const { error } = await supabase.from('ingest_runs').update(fields).eq('id', runId);
+  if (error) console.error('  ✗ run patch failed:', error.message);
+}
+
 async function ingest() {
   const account = await loadAccount(accountId);
   const site    = await loadSite(siteId);
   console.log(`Account: ${account.label || account.address} <${account.address}>`);
   console.log(`Site:    ${site.label || site.from_domain} (@${site.from_domain})`);
+
+  await supabase.from('ingest_runs').insert({
+    id: runId, account_id: accountId, site_id: siteId, status: 'running',
+  });
 
   const client = new ImapFlow({
     host: 'imap.gmail.com',
@@ -156,10 +169,18 @@ async function ingest() {
   const since = new Date(Date.now() - 30 * 86400000);
   const uids = await client.search({ since });
   console.log(`Found ${uids.length} message(s) in the last 30 days.`);
+  await patchRun({ total: uids.length });
 
-  let inserted = 0, skipped = 0, failed = 0;
+  let inserted = 0, skipped = 0, failed = 0, processed = 0;
 
   for await (const msg of client.fetch(uids, { source: true, envelope: true })) {
+    processed++;
+    // Reporting every message would hammer the DB on big mailboxes; tick
+    // up roughly every 1% (min every message for tiny runs).
+    if (processed === uids.length || processed % Math.max(1, Math.ceil(uids.length / 100)) === 0) {
+      await patchRun({ processed, inserted, skipped, failed });
+    }
+
     const parsed = await simpleParser(msg.source);
     const messageId = parsed.messageId || `gen_${msg.uid}@cardtrack`;
     const subject   = parsed.subject || '(no subject)';
@@ -237,9 +258,15 @@ async function ingest() {
 
   await client.logout();
   console.log(`\nDone. inserted=${inserted} skipped=${skipped} failed=${failed}`);
+  await patchRun({
+    processed, inserted, skipped, failed,
+    status: 'done', finished_at: new Date().toISOString(),
+  });
 }
 
-ingest().catch(err => {
+ingest().catch(async (err) => {
   console.error('Ingest run crashed:', err);
+  await patchRun({ status: 'failed', error: err.message, finished_at: new Date().toISOString() })
+    .catch(() => { /* best-effort; row may not exist yet */ });
   process.exit(1);
 });

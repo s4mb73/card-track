@@ -76,6 +76,7 @@ let INGESTIONS     = [];
 let EMAIL_ACCOUNTS = [];
 let SITES          = [];
 let WEBHOOKS       = [];
+let INGEST_RUNS    = [];
 let emailFilter    = 'all';     // 'all' | 'inserted' | 'skipped' — filters Recent activity table
 let selectedAccount = '';       // Email tab dropdowns; persisted in localStorage
 let selectedSite    = '';
@@ -93,7 +94,7 @@ const TAB_META = {
   inventory:     { title: 'Inventory',     sub: 'Cards in your collection — what you paid, where they live, and what they sold for.' },
   addresses:     { title: 'Addresses',     sub: 'Friends and customers — where cards are sent and who you ship to.' },
   notifications: { title: 'Notifications', sub: 'Who has been notified, and what is queued for the next check.' },
-  email:         { title: 'Email',         sub: 'Ingest order confirmations from your inbox.' },
+  email:         { title: 'Email scraper', sub: 'Pull order confirmations from your inbox.' },
   settings:      { title: 'Settings',      sub: 'Gmail accounts and sender sites used by the email scraper.' },
 };
 
@@ -162,14 +163,14 @@ function isMissingTableError(err) {
 }
 
 async function loadData() {
-  const [invRes, addrRes, ingRes, acctRes, siteRes, hookRes] = await Promise.all([
+  const [invRes, addrRes, ingRes, acctRes, siteRes, hookRes, runRes] = await Promise.all([
     supabase.from('inventory').select('*').order('id'),
     supabase.from('addresses').select('*').order('id'),
     supabase.from('email_ingestions').select('*').order('ingested_at', { ascending: false }).limit(50),
-    // Anon can't read app_password / webhook url, so we ask for only safe columns.
     supabase.from('email_accounts').select('id, label, address, created_at').order('created_at'),
     supabase.from('sites').select('*').order('label'),
     supabase.from('webhooks').select('id, label, active, created_at').order('created_at'),
+    supabase.from('ingest_runs').select('*').order('started_at', { ascending: false }).limit(5),
   ]);
   if (invRes.error)  throw new Error(`Inventory: ${invRes.error.message}`);
   if (addrRes.error) throw new Error(`Addresses: ${addrRes.error.message}`);
@@ -177,12 +178,14 @@ async function loadData() {
   if (acctRes.error && !isMissingTableError(acctRes.error)) throw new Error(`Email accounts: ${acctRes.error.message}`);
   if (siteRes.error && !isMissingTableError(siteRes.error)) throw new Error(`Sites: ${siteRes.error.message}`);
   if (hookRes.error && !isMissingTableError(hookRes.error)) throw new Error(`Webhooks: ${hookRes.error.message}`);
+  if (runRes.error  && !isMissingTableError(runRes.error))  throw new Error(`Ingest runs: ${runRes.error.message}`);
   ITEMS          = invRes.data  ?? [];
   ADDRESSES      = addrRes.data ?? [];
   INGESTIONS     = ingRes.data  ?? [];
   EMAIL_ACCOUNTS = acctRes.data ?? [];
   SITES          = siteRes.data ?? [];
   WEBHOOKS       = hookRes.data ?? [];
+  INGEST_RUNS    = runRes.data  ?? [];
   ADDRESS_MAP    = new Map(ADDRESSES.map(a => [a.id, a]));
 }
 
@@ -474,6 +477,44 @@ async function sendNotifications(inventoryIds) {
 }
 
 // ── Email ─────────────────────────────────────────────────────────────────────
+// Most recent run, regardless of status — used to drive the progress bar.
+// If it's `running` we show a live bar; if it's `done`/`failed` and finished
+// in the last 30 seconds we show the final summary, then it drops off.
+function latestRun() {
+  return INGEST_RUNS.length ? INGEST_RUNS[0] : null;
+}
+
+function ingestProgressHtml() {
+  const run = latestRun();
+  if (!run) return '';
+  const isRunning = run.status === 'running';
+  const finishedRecently = !isRunning
+    && run.finished_at
+    && (Date.now() - new Date(run.finished_at).getTime() < 30_000);
+  if (!isRunning && !finishedRecently) return '';
+
+  const total     = Math.max(0, run.total || 0);
+  const processed = Math.min(total, Math.max(0, run.processed || 0));
+  const pct       = total > 0 ? Math.round((processed / total) * 100) : 0;
+  const indeterminate = isRunning && total === 0;
+
+  const headline = isRunning
+    ? (indeterminate ? 'Connecting to Gmail…' : `Scraping ${processed} of ${total} (${pct}%)`)
+    : run.status === 'done'
+      ? `Done — ${run.inserted} new, ${run.skipped} skipped, ${run.failed} failed (${run.processed}/${run.total})`
+      : `Failed: ${run.error || 'unknown error'}`;
+
+  const cls = isRunning ? '' : run.status === 'done' ? 'ok' : 'warn';
+  return `
+    <div class="ingest-progress ${cls}">
+      <div class="ingest-progress-line">${esc(headline)}</div>
+      <div class="ingest-progress-track ${indeterminate ? 'indeterminate' : ''}">
+        <div class="ingest-progress-fill" style="width: ${indeterminate ? 100 : pct}%"></div>
+      </div>
+    </div>
+  `;
+}
+
 function renderEmail() {
   const el = document.getElementById('tab-email');
 
@@ -523,7 +564,7 @@ function renderEmail() {
     <div class="section">
       <div class="section-head">
         <div>
-          <h2>Email ingestion</h2>
+          <h2>Email scraper</h2>
           <div class="sub">Last run: ${esc(lastRun)}</div>
         </div>
         <div class="toolbar">
@@ -538,6 +579,7 @@ function renderEmail() {
       </div>
       ${setupHint}
       <div id="run-ingest-status" class="run-status" style="display:none"></div>
+      ${ingestProgressHtml()}
     </div>
   `;
 
@@ -691,9 +733,9 @@ async function triggerIngest() {
       const detail = data?.error || error.message || 'Unknown error';
       throw new Error(detail);
     }
-    status.className = 'run-status ok';
-    status.textContent = 'Workflow started. New ingestions will appear here in ~30 seconds.';
-    setTimeout(() => { btn.disabled = false; btn.textContent = 'Run now'; }, 5000);
+    status.style.display = 'none';
+    btn.disabled = false;
+    btn.textContent = 'Run now';
   } catch (err) {
     status.className = 'run-status warn';
     status.textContent = `Failed to trigger: ${err.message}`;
@@ -1287,6 +1329,7 @@ function subscribeRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'email_accounts' },   scheduleRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'sites' },             scheduleRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'webhooks' },          scheduleRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'ingest_runs' },       scheduleRefresh)
     .subscribe();
 }
 

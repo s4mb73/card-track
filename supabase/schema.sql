@@ -112,6 +112,27 @@ create table if not exists public.webhooks (
   created_at  timestamptz  default now()
 );
 
+-- One row per Email-scraper run. Written by ingest.js as it works so
+-- the dashboard can render a live progress bar via realtime subscription.
+-- `total` is set after the IMAP search returns; `processed` is bumped
+-- per message; `status` flips to `done` or `failed` at the end.
+create table if not exists public.ingest_runs (
+  id           text         primary key,
+  account_id   text,
+  site_id      text,
+  status       text         not null default 'running',  -- running | done | failed
+  total        integer      default 0,
+  processed    integer      default 0,
+  inserted     integer      default 0,
+  skipped      integer      default 0,
+  failed       integer      default 0,
+  error        text         default '',
+  started_at   timestamptz  default now(),
+  finished_at  timestamptz
+);
+create index if not exists ingest_runs_started_idx
+  on public.ingest_runs(started_at desc);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- updated_at trigger
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -147,6 +168,7 @@ alter table public.email_ingestions enable row level security;
 alter table public.email_accounts   enable row level security;
 alter table public.sites            enable row level security;
 alter table public.webhooks         enable row level security;
+alter table public.ingest_runs      enable row level security;
 
 drop policy if exists "Public read addresses" on public.addresses;
 create policy "Public read addresses"
@@ -229,6 +251,14 @@ create policy "Anon write webhooks"
 -- Treat the webhook URL like a credential: anon may INSERT/UPDATE it
 -- via the Settings form but cannot SELECT it back.
 revoke select (url) on public.webhooks from anon, authenticated;
+
+-- Read-only for anon: only the ingest script (via service role) writes
+-- progress, the dashboard just observes.
+drop policy if exists "Anon read ingest_runs" on public.ingest_runs;
+create policy "Anon read ingest_runs"
+  on public.ingest_runs for select
+  to anon, authenticated
+  using (true);
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Seed: current CardTrack data

@@ -544,6 +544,40 @@ table.addr-table th.num { text-align: right; }
 .btn-add { padding: 7px 13px; font-size: 13px; }
 .btn-sm  { padding: 4px 10px; font-size: 12px; }
 
+.ingest-progress { margin-top: 12px; }
+.ingest-progress-line {
+  font-size: 13px;
+  color: var(--text-muted, #9ca3af);
+  margin-bottom: 6px;
+  font-variant-numeric: tabular-nums;
+}
+.ingest-progress.ok   .ingest-progress-line { color: var(--ok,   #10b981); }
+.ingest-progress.warn .ingest-progress-line { color: var(--warn, #ef4444); }
+.ingest-progress-track {
+  position: relative;
+  height: 6px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.ingest-progress-fill {
+  height: 100%;
+  background: var(--accent, #6366f1);
+  border-radius: 999px;
+  transition: width 250ms ease-out;
+}
+.ingest-progress.ok   .ingest-progress-fill { background: var(--ok,   #10b981); }
+.ingest-progress.warn .ingest-progress-fill { background: var(--warn, #ef4444); }
+
+@keyframes ingest-progress-sweep {
+  from { transform: translateX(-100%); }
+  to   { transform: translateX(100%);  }
+}
+.ingest-progress-track.indeterminate .ingest-progress-fill {
+  width: 35% !important;
+  animation: ingest-progress-sweep 1.4s linear infinite;
+}
+
 .btn-secondary {
   background: var(--surface);
   border: 1px solid var(--border);
