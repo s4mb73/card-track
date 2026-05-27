@@ -245,7 +245,8 @@ function renderInventory() {
     const addr     = ADDRESS_MAP.get(item.recipient_address_id);
     const destName = addr?.full_name || '—';
     const destLoc  = shortAddress(addr);
-    const subLine  = esc(item.category || '');
+    const subParts = [item.category, item.order_reference].map(s => String(s || '').trim()).filter(Boolean);
+    const subLine  = subParts.join(' · ');
     const checked  = SELECTED_INV.has(item.id);
 
     return `
@@ -255,7 +256,7 @@ function renderInventory() {
         </td>
         <td>
           <div class="primary">${esc(item.item)}</div>
-          ${subLine ? `<span class="muted">${subLine}</span>` : ''}
+          ${subLine ? `<span class="muted mono">${esc(subLine)}</span>` : ''}
         </td>
         <td>
           ${esc(destName)}
