@@ -41,8 +41,30 @@ function trackingUrl(carrier, ref) {
   return CARRIER_URL[carrier] ? CARRIER_URL[carrier](ref) : '';
 }
 
+// Reverse: parse a tracking URL the user pasted into (carrier, ref).
+const TRACKING_URL_PATTERNS = [
+  { carrier: 'royal_mail',  re: /royalmail\.com\/.*?tracking-results\/([^/?#&]+)/i },
+  { carrier: 'evri',        re: /evri\.com\/.*?track\/([^/?#&]+)/i },
+  { carrier: 'dpd',         re: /dpd\.co\.uk\/.*?tracking\/parcel\/([^/?#&]+)/i },
+  { carrier: 'yodel',       re: /yodel\.co\.uk\/.*?tracking\/([^/?#&]+)/i },
+  { carrier: 'parcelforce', re: /parcelforce\.com\/.*?trackNumber=([^&?#]+)/i },
+];
+function parseTrackingInput(input) {
+  const s = String(input || '').trim();
+  if (!s) return { carrier: '', ref: '' };
+  for (const { carrier, re } of TRACKING_URL_PATTERNS) {
+    const m = s.match(re);
+    if (m) return { carrier, ref: decodeURIComponent(m[1]) };
+  }
+  // Bare tracking number — keep it; the checker will skip until a carrier is set.
+  if (/^[A-Za-z0-9-]+$/.test(s)) return { carrier: '', ref: s };
+  return { carrier: '', ref: '' };
+}
+
 const SALE_STATUSES = ['holding', 'listed', 'sold', 'refunded'];
 const ACQ_STATUSES  = ['pending', 'in_transit', 'out_for_delivery', 'delivered', 'failed'];
+const CATEGORIES    = ['Topps', 'Pokémon'];
+const QUANTITIES    = [1, 2, 3, 4];
 const NOTIFY_TRIGGERS = ['in_transit', 'out_for_delivery', 'delivered', 'failed'];
 const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
 const EMAIL_SOURCES   = [
@@ -437,11 +459,13 @@ function renderEmail() {
 }
 
 // ── Modal infrastructure ──────────────────────────────────────────────────────
-function showModal({ title, body, submitText = 'Save', onSubmit, onDelete, afterMount }) {
-  const overlay = document.createElement('div');
-  overlay.className = 'modal-overlay';
+function showModal({ title, body, submitText = 'Save', onSubmit, onDelete, afterMount, kind = 'modal' }) {
+  const isPanel    = kind === 'panel';
+  const overlay    = document.createElement('div');
+  overlay.className = isPanel ? 'panel-overlay' : 'modal-overlay';
+  const formClass  = isPanel ? 'side-panel' : 'modal';
   overlay.innerHTML = `
-    <form class="modal" id="modal-form" novalidate>
+    <form class="${formClass}" id="modal-form" novalidate>
       <div class="modal-head">
         <h3>${esc(title)}</h3>
         <button type="button" class="modal-close" aria-label="Close">×</button>
@@ -514,18 +538,27 @@ function field(label, name, type, opts = {}) {
   const v = opts.value ?? '';
   const req = opts.required ? 'required' : '';
   const wide = opts.wide ? ' wide' : '';
+  const step = opts.step ? `step="${esc(opts.step)}"` : '';
   if (type === 'textarea') {
     return `<label class="field${wide}"><span>${esc(label)}</span><textarea name="${esc(name)}" ${req}>${esc(v)}</textarea></label>`;
   }
   if (type === 'select') {
     const optsHtml = opts.options.map(o => {
-      const val = typeof o === 'string' ? o : o.value;
-      const lbl = typeof o === 'string' ? o : o.label;
+      const val = typeof o === 'string' || typeof o === 'number' ? o : o.value;
+      const lbl = typeof o === 'string' || typeof o === 'number' ? o : o.label;
       return `<option value="${esc(val)}" ${String(val) === String(v) ? 'selected' : ''}>${esc(lbl)}</option>`;
     }).join('');
     return `<label class="field${wide}"><span>${esc(label)}</span><select name="${esc(name)}" ${req}>${optsHtml}</select></label>`;
   }
-  return `<label class="field${wide}"><span>${esc(label)}</span><input type="${esc(type)}" name="${esc(name)}" value="${esc(v)}" ${req}></label>`;
+  if (opts.prefix) {
+    return `<label class="field${wide}"><span>${esc(label)}</span>
+      <span class="input-wrap has-prefix">
+        <span class="prefix">${esc(opts.prefix)}</span>
+        <input type="${esc(type)}" name="${esc(name)}" value="${esc(v)}" ${req} ${step}>
+      </span>
+    </label>`;
+  }
+  return `<label class="field${wide}"><span>${esc(label)}</span><input type="${esc(type)}" name="${esc(name)}" value="${esc(v)}" ${req} ${step}></label>`;
 }
 
 async function lookupPostcode(postcode) {
@@ -579,37 +612,27 @@ function addressFormHtml(a = {}) {
 
 function inventoryFormHtml(it = {}) {
   const addrOpts = [{ value: '', label: '—' }, ...ADDRESSES.map(a => ({ value: a.id, label: a.full_name }))];
-  const carrierOpts = [{ value: '', label: '—' }, ...Object.entries(CARRIER_LABELS).map(([v, l]) => ({ value: v, label: l }))];
+  const categoryOpts = [{ value: '', label: '—' }, ...CATEGORIES.map(c => ({ value: c, label: c }))];
+  const qtyOpts = QUANTITIES.map(n => ({ value: n, label: String(n) }));
+  const statusOpts = ACQ_STATUSES.map(s => ({ value: s, label: STATUS_LABELS[s] || s }));
+  const trackingLinkValue = trackingUrl(it.carrier, it.tracking_ref) || it.tracking_ref || '';
   return `
     <div class="form-section-label">Card</div>
     <div class="form-grid">
       ${field('Item', 'item', 'text', { value: it.item, required: true, wide: true })}
-      ${field('Category', 'category', 'text', { value: it.category })}
+      ${field('Category', 'category', 'select', { value: it.category || '', options: categoryOpts })}
       ${field('Set / Edition', 'set_edition', 'text', { value: it.set_edition })}
-      ${field('Condition', 'condition', 'text', { value: it.condition })}
-      ${field('Quantity', 'quantity', 'number', { value: it.quantity ?? 1 })}
+      ${field('Quantity', 'quantity', 'select', { value: it.quantity ?? 1, options: qtyOpts })}
     </div>
-    <div class="form-section-label">Buying</div>
+    <div class="form-section-label">Order</div>
     <div class="form-grid">
-      ${field('Source', 'source', 'text', { value: it.source })}
-      ${field('Order reference', 'order_reference', 'text', { value: it.order_reference })}
-      ${field('Date ordered', 'date_ordered', 'date', { value: it.date_ordered })}
-      ${field('Cost', 'cost', 'number', { value: it.cost ?? 0 })}
-      ${field('Shipping (in)', 'shipping_in_cost', 'number', { value: it.shipping_in_cost ?? 0 })}
-      ${field('Carrier', 'carrier', 'select', { value: it.carrier || '', options: carrierOpts })}
-      ${field('Tracking ref', 'tracking_ref', 'text', { value: it.tracking_ref })}
-      ${field('Acquisition status', 'acquisition_status', 'select', { value: it.acquisition_status || 'pending', options: ACQ_STATUSES })}
-      ${field('Date received', 'date_received', 'date', { value: it.date_received })}
-      ${field('Recipient', 'recipient_address_id', 'select', { value: it.recipient_address_id || '', options: addrOpts, required: true, wide: true })}
-    </div>
-    <div class="form-section-label">Selling</div>
-    <div class="form-grid">
-      ${field('Sale status', 'sale_status', 'select', { value: it.sale_status || 'holding', options: SALE_STATUSES })}
-      ${field('Sold via', 'sold_via', 'text', { value: it.sold_via })}
-      ${field('Sale price', 'sale_price', 'number', { value: it.sale_price ?? '' })}
-      ${field('Fees', 'fees', 'number', { value: it.fees ?? '' })}
-      ${field('Shipping (out)', 'shipping_out_cost', 'number', { value: it.shipping_out_cost ?? '' })}
-      ${field('Date sold', 'date_sold', 'date', { value: it.date_sold })}
+      ${field('Order Reference', 'order_reference', 'text', { value: it.order_reference })}
+      ${field('Date Ordered', 'date_ordered', 'date', { value: it.date_ordered })}
+      ${field('Cost', 'cost', 'number', { value: it.cost ?? '', prefix: '£', step: '0.01' })}
+      ${field('Tracking link', 'tracking_link', 'url', { value: trackingLinkValue, wide: true })}
+      ${field('Item Status', 'acquisition_status', 'select', { value: it.acquisition_status || 'pending', options: statusOpts })}
+      ${field('Delivery Date', 'date_received', 'date', { value: it.date_received })}
+      ${field('Sent to', 'recipient_address_id', 'select', { value: it.recipient_address_id || '', options: addrOpts, required: true, wide: true })}
     </div>
     <div class="form-grid">
       ${field('Notes', 'notes', 'textarea', { value: it.notes, wide: true })}
@@ -627,13 +650,21 @@ function readForm(form) {
 }
 
 function cleanInventoryPayload(data) {
-  // Convert numerics
-  ['quantity', 'cost', 'shipping_in_cost', 'sale_price', 'fees', 'shipping_out_cost'].forEach(k => {
+  // Tracking link → (carrier, tracking_ref). The link itself isn't stored —
+  // it's rebuilt from those two via trackingUrl() on read.
+  const link = data.tracking_link;
+  delete data.tracking_link;
+  if (link != null) {
+    const { carrier, ref } = parseTrackingInput(link);
+    data.carrier      = carrier;
+    data.tracking_ref = ref;
+  }
+
+  ['quantity', 'cost'].forEach(k => {
     if (data[k] === '' || data[k] == null) data[k] = null;
     else data[k] = Number(data[k]);
   });
-  // Null out empty optional fields the schema accepts as null
-  ['date_ordered', 'date_received', 'date_sold', 'recipient_address_id'].forEach(k => {
+  ['date_ordered', 'date_received', 'recipient_address_id'].forEach(k => {
     if (data[k] === '' || data[k] == null) data[k] = null;
   });
   return data;
@@ -674,6 +705,7 @@ function openAddressEditor(existing) {
 function openInventoryEditor(existing) {
   const editing = !!existing;
   showModal({
+    kind: 'panel',
     title: editing ? 'Edit item' : 'New item',
     body:  inventoryFormHtml(existing || {}),
     submitText: editing ? 'Save changes' : 'Add item',

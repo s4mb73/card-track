@@ -661,6 +661,76 @@ table.row-clickable tbody tr { cursor: pointer; }
   .modal { max-width: 100%; border-radius: 12px; }
 }
 
+/* ── Input with inline prefix (e.g. £) ─────────────────── */
+.input-wrap { position: relative; display: block; }
+.input-wrap .prefix {
+  position: absolute;
+  left: 11px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+  font-size: 13.5px;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.input-wrap.has-prefix input { padding-left: 22px; }
+
+/* ── Side panel (used for item editor) ─────────────────── */
+@keyframes panelOverlayIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes panelSlideIn {
+  from { transform: translateX(40px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.panel-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 17, 28, 0.40);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+  z-index: 100;
+  display: flex;
+  justify-content: flex-end;
+  animation: panelOverlayIn 200ms var(--ease-out);
+}
+
+.side-panel {
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  width: 560px;
+  max-width: 96vw;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: -16px 0 40px rgba(15, 17, 28, 0.14);
+  animation: panelSlideIn 260ms var(--ease);
+}
+
+.side-panel .modal-head {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--surface);
+}
+
+.side-panel .modal-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.side-panel .modal-foot {
+  position: sticky;
+  bottom: 0;
+  border-radius: 0;
+}
+
+.side-panel .form-grid { grid-template-columns: 1fr 1fr; }
+
+@media (max-width: 720px) {
+  .side-panel { width: 100vw; max-width: 100vw; border-left: 0; }
+  .side-panel .form-grid { grid-template-columns: 1fr; }
+}
+
 .person .avatar {
   width: 38px; height: 38px;
   border-radius: 10px;
