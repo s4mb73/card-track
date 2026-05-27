@@ -12,7 +12,7 @@ const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBh
 const supabase = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const STATUS_LABELS = {
-  pending:          'Pending',
+  confirmed:        'Confirmed',
   in_transit:       'In transit',
   out_for_delivery: 'Out for delivery',
   delivered:        'Delivered',
@@ -62,11 +62,11 @@ function parseTrackingInput(input) {
   return { carrier: '', ref: '' };
 }
 
-const ACQ_STATUSES  = ['pending', 'in_transit', 'out_for_delivery', 'delivered', 'failed', 'cancelled'];
+const ACQ_STATUSES  = ['confirmed', 'in_transit', 'out_for_delivery', 'delivered', 'failed', 'cancelled'];
 const CATEGORIES    = ['Topps', 'Pokémon'];
 const QUANTITIES    = [1, 2, 3, 4];
 const NOTIFY_TRIGGERS = ['in_transit', 'out_for_delivery', 'delivered', 'failed', 'cancelled'];
-const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
+const ACTIVE_STATUSES = ['confirmed', 'in_transit', 'out_for_delivery'];
 const INGEST_STATUS_LABELS = {
   inserted: 'Inserted',
   skipped:  'Skipped',
@@ -1222,7 +1222,7 @@ function inventoryFormHtml(it = {}) {
       ${field('Date Ordered', 'date_ordered', 'date', { value: it.date_ordered })}
       ${field('Cost', 'cost', 'number', { value: it.cost ?? '', prefix: '£', step: '0.01' })}
       ${field('Tracking link', 'tracking_link', 'url', { value: trackingLinkValue, wide: true })}
-      ${field('Item Status', 'acquisition_status', 'select', { value: it.acquisition_status || 'pending', options: statusOpts })}
+      ${field('Item Status', 'acquisition_status', 'select', { value: it.acquisition_status || 'confirmed', options: statusOpts })}
       ${field('Delivery Date', 'date_received', 'date', { value: it.date_received })}
       ${field('Sent to', 'recipient_address_id', 'select', { value: it.recipient_address_id || '', options: addrOpts, required: true, wide: true })}
     </div>

@@ -9,7 +9,7 @@
  *     HTML scrape, so the GitHub Actions log shows which method succeeded.
  *
  * Returns a normalised status string:
- *   pending | in_transit | out_for_delivery | delivered | failed | unknown
+ *   confirmed | in_transit | out_for_delivery | delivered | failed | unknown
  */
 
 // ── Tunables ──────────────────────────────────────────────────────────────────
@@ -19,7 +19,7 @@ const RETRY_BASE_MS      = 1000;  // backoff: 1s, then 2s
 
 // ── Normalised status values ──────────────────────────────────────────────────
 export const STATUS = {
-  PENDING:           'pending',
+  CONFIRMED:         'confirmed',
   IN_TRANSIT:        'in_transit',
   OUT_FOR_DELIVERY:  'out_for_delivery',
   DELIVERED:         'delivered',
@@ -28,7 +28,7 @@ export const STATUS = {
 };
 
 export const STATUS_LABELS = {
-  pending:           'Pending',
+  confirmed:         'Confirmed',
   in_transit:        'In transit',
   out_for_delivery:  'Out for delivery',
   delivered:         'Delivered',
@@ -108,7 +108,7 @@ function mapRoyalMailEvent(latest, eventCount) {
   if (failed.includes(latest))         return STATUS.FAILED;
   if (inTransit.includes(latest))      return STATUS.IN_TRANSIT;
   if (eventCount > 0)                  return STATUS.IN_TRANSIT;
-  return STATUS.PENDING;
+  return STATUS.CONFIRMED;
 }
 
 async function checkRoyalMail(ref) {
@@ -270,7 +270,7 @@ async function checkParcelForce(ref) {
 
 // ── Public API ─────────────────────────────────────────────────────────────────
 export async function checkTracking(carrier, ref) {
-  if (!ref || ref.trim() === '') return STATUS.PENDING;
+  if (!ref || ref.trim() === '') return STATUS.CONFIRMED;
 
   switch (carrier) {
     case 'royal_mail':  return checkRoyalMail(ref);

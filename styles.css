@@ -370,7 +370,7 @@ td .num { font-variant-numeric: tabular-nums; }
   flex-shrink: 0;
 }
 
-.status-pending          .sd { background: var(--c-slate); }
+.status-confirmed        .sd { background: var(--c-slate); }
 .status-in_transit       .sd { background: var(--c-blue);  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.14); }
 .status-out_for_delivery .sd { background: var(--c-amber); box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18); animation: pulseUrgent 1.8s ease-in-out infinite; }
 .status-delivered        .sd { background: var(--c-green); box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.14); }

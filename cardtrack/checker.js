@@ -28,12 +28,12 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
 
-const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
+const ACTIVE_STATUSES = ['confirmed', 'in_transit', 'out_for_delivery'];
 
 // Max age of last_checked before an item is "due" again, by status.
 // Anything not listed here is not polled.
 const POLL_INTERVAL_MS = {
-  pending:          24 * 60 * 60 * 1000, // 24h — carriers don't activate tracking until dispatched
+  confirmed:        24 * 60 * 60 * 1000, // 24h — carriers don't activate tracking until dispatched
   in_transit:        4 * 60 * 60 * 1000, //  4h
   out_for_delivery:      15 * 60 * 1000, // 15 min — speed matters at the last mile
 };

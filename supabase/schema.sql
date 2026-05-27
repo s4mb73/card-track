@@ -43,7 +43,7 @@ create table if not exists public.inventory (
   cost                  numeric(10,2) default 0,
   carrier               text         default '',
   tracking_ref          text         default '',
-  acquisition_status    text         default 'pending',
+  acquisition_status    text         default 'confirmed',
   delivery_due_date     date,
   date_received         date,
   recipient_address_id  text         references public.addresses(id) on delete set null,
@@ -301,5 +301,5 @@ values
 
   ('inv_004', 'Topps Chrome Mbappe', 'Topps', 1,
    '2026-05-21', 55, 'royal_mail', '',
-   'pending', null, 'addr_002', null, null)
+   'confirmed', null, 'addr_002', null, null)
 on conflict (id) do nothing;

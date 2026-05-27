@@ -263,7 +263,7 @@ async function ingest() {
         cost: cls.cost || 0,
         carrier: '',
         tracking_ref: '',
-        acquisition_status: 'pending',
+        acquisition_status: 'confirmed',
         recipient_address_id: null,
       };
       const { error: insErr } = await supabase.from('inventory').insert(inventoryRow);
@@ -301,7 +301,9 @@ async function ingest() {
       if (cls.carrier)      update.carrier      = cls.carrier;
       if (cls.tracking_ref) update.tracking_ref = cls.tracking_ref;
       // Don't downgrade rows that have already moved past in_transit.
-      if (['pending', '', null].includes(existing.acquisition_status)) {
+      // Accept the legacy 'pending' value too so any rows still on the old
+      // status from before the rename still take the shipment update.
+      if (['confirmed', 'pending', '', null].includes(existing.acquisition_status)) {
         update.acquisition_status = 'in_transit';
       }
     } else { // cancellation
