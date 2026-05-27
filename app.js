@@ -324,14 +324,12 @@ function renderAddresses() {
           <div class="avatar">${esc(initials(a.full_name))}</div>
           <div class="head-meta">
             <div class="name">${esc(a.full_name)}</div>
-            ${a.type ? `<span class="type-tag">${esc(a.type)}</span>` : ''}
           </div>
         </div>
         <div class="addr">${addrHtml}</div>
         <div class="contact">
           ${a.email ? `<div><b>Email</b>${esc(a.email)}</div>` : ''}
           <div><b>Phone</b>${esc(a.phone || '—')}</div>
-          <div><b>WhatsApp</b>${esc(a.whatsapp || '—')}</div>
           <div><b>Prefers</b><span class="channel-tag">${esc(channel.toUpperCase())}</span></div>
         </div>
         <div class="meta">
@@ -592,12 +590,10 @@ function wirePostcodeLookup(form) {
 function addressFormHtml(a = {}) {
   return `
     <div class="form-grid">
-      ${field('Full name', 'full_name', 'text', { value: a.full_name, required: true })}
-      ${field('Type', 'type', 'select', { value: a.type || 'Friend', options: ['Friend', 'Customer', 'Self'] })}
+      ${field('Full name', 'full_name', 'text', { value: a.full_name, required: true, wide: true })}
       ${field('Email', 'email', 'email', { value: a.email })}
       ${field('Phone', 'phone', 'tel', { value: a.phone })}
-      ${field('WhatsApp', 'whatsapp', 'tel', { value: a.whatsapp })}
-      ${field('Preferred channel', 'preferred_channel', 'select', { value: a.preferred_channel || 'sms', options: ['sms', 'whatsapp', 'email'] })}
+      ${field('Preferred channel', 'preferred_channel', 'select', { value: a.preferred_channel || 'sms', options: ['sms', 'email'], wide: true })}
       ${field('Address line 1', 'line1', 'text', { value: a.line1, wide: true })}
       ${field('Address line 2', 'line2', 'text', { value: a.line2, wide: true })}
       ${field('Address line 3', 'line3', 'text', { value: a.line3, wide: true })}
@@ -672,7 +668,7 @@ function cleanInventoryPayload(data) {
 function openAddressEditor(existing) {
   const editing = !!existing;
   showModal({
-    title: editing ? 'Edit address' : 'New address',
+    title: editing ? 'Edit Address' : 'New Address',
     body:  addressFormHtml(existing || {}),
     submitText: editing ? 'Save changes' : 'Add address',
     afterMount: (form) => wirePostcodeLookup(form),
