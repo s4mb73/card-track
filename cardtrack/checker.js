@@ -31,6 +31,21 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
 
 const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
 
+// Max age of last_checked before an item is "due" again, by status.
+// Anything not listed here is not polled.
+const POLL_INTERVAL_MS = {
+  pending:          24 * 60 * 60 * 1000, // 24h — carriers don't activate tracking until dispatched
+  in_transit:        4 * 60 * 60 * 1000, //  4h
+  out_for_delivery:      15 * 60 * 1000, // 15 min — speed matters at the last mile
+};
+
+function isDue(item, nowMs) {
+  const interval = POLL_INTERVAL_MS[item.acquisition_status];
+  if (interval == null) return false;
+  if (!item.last_checked) return true;
+  return nowMs - new Date(item.last_checked).getTime() >= interval;
+}
+
 const NOTIFY_ON_TRANSITION = {
   in_transit:       true,
   out_for_delivery: true,
@@ -63,18 +78,20 @@ async function main() {
   const items     = invRes.data  ?? [];
   const addresses = addrRes.data ?? [];
   const addrMap   = new Map(addresses.map(a => [a.id, a]));
+  const nowMs     = Date.now();
   const active    = items.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status));
+  const due       = active.filter(i => isDue(i, nowMs));
 
-  log(`Loaded ${items.length} items, ${active.length} active`);
+  log(`Loaded ${items.length} items, ${active.length} active, ${due.length} due now`);
 
-  if (active.length === 0) {
-    log('No active items to check — done');
+  if (due.length === 0) {
+    log('Nothing due this run — done');
     return;
   }
 
   let changed = 0, notified = 0, errors = 0;
 
-  for (const item of active) {
+  for (const item of due) {
     if (!item.tracking_ref) {
       log(`  SKIP  ${item.item} — no tracking ref yet`);
       continue;
@@ -144,7 +161,7 @@ async function main() {
     }
   }
 
-  log(`Done — ${active.length} checked, ${changed} changed, ${notified} notified, ${errors} errors`);
+  log(`Done — ${due.length} checked, ${changed} changed, ${notified} notified, ${errors} errors`);
   log('─'.repeat(60));
 }
 

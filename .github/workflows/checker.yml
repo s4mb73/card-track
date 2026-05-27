@@ -2,7 +2,9 @@ name: CardTrack hourly check
 
 on:
   schedule:
-    - cron: '0 * * * *'
+    # Every 15 minutes; checker.js decides per-item whether it's due based on
+    # acquisition_status (pending=24h, in_transit=4h, out_for_delivery=15min).
+    - cron: '*/15 * * * *'
   workflow_dispatch:
 
 jobs:

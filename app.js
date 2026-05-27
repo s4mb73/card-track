@@ -29,6 +29,18 @@ const CARRIER_LABELS = {
   parcelforce: 'ParcelForce',
 };
 
+const CARRIER_URL = {
+  royal_mail:  (ref) => `https://www.royalmail.com/track-your-item#/tracking-results/${encodeURIComponent(ref)}`,
+  evri:        (ref) => `https://www.evri.com/track/${encodeURIComponent(ref)}`,
+  dpd:         (ref) => `https://track.dpd.co.uk/tracking/parcel/${encodeURIComponent(ref)}`,
+  yodel:       (ref) => `https://www.yodel.co.uk/tracking/${encodeURIComponent(ref)}`,
+  parcelforce: (ref) => `https://www.parcelforce.com/track-trace?trackNumber=${encodeURIComponent(ref)}`,
+};
+function trackingUrl(carrier, ref) {
+  if (!carrier || !ref) return '';
+  return CARRIER_URL[carrier] ? CARRIER_URL[carrier](ref) : '';
+}
+
 const SALE_STATUSES = ['holding', 'listed', 'sold', 'refunded'];
 const ACQ_STATUSES  = ['pending', 'in_transit', 'out_for_delivery', 'delivered', 'failed'];
 const NOTIFY_TRIGGERS = ['in_transit', 'out_for_delivery', 'delivered', 'failed'];
@@ -119,6 +131,22 @@ function newId(prefix) {
   return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 }
 
+function isWithinDays(value, days) {
+  if (!value) return false;
+  const t = new Date(value).getTime();
+  return !Number.isNaN(t) && (Date.now() - t) < days * 86400000;
+}
+
+function weekSummary() {
+  const delivered = ITEMS.filter(i =>
+    i.acquisition_status === 'delivered' && isWithinDays(i.date_received, 7)).length;
+  const soldThisWeek = ITEMS.filter(i =>
+    i.sale_status === 'sold' && isWithinDays(i.date_sold, 7));
+  const profit = soldThisWeek.reduce((s, i) => s + (profitOf(i) || 0), 0);
+  const added = ITEMS.filter(i => isWithinDays(i.created_at, 7)).length;
+  return { delivered, profit, sold: soldThisWeek.length, added };
+}
+
 // ── Data loading ──────────────────────────────────────────────────────────────
 async function loadData() {
   const [invRes, addrRes] = await Promise.all([
@@ -172,8 +200,8 @@ function renderInventory() {
   `).join('');
 
   const rows = filtered.map(item => {
-    const url = safeUrl(item.tracking_url);
     const ref = item.tracking_ref || '';
+    const url = safeUrl(trackingUrl(item.carrier, ref));
     const trackHtml = ref
       ? (url
           ? `<a href="${esc(url)}" target="_blank" rel="noopener" class="mono" data-stop>${esc(ref)}</a>`
@@ -207,7 +235,19 @@ function renderInventory() {
     `;
   }).join('');
 
+  const w = weekSummary();
+  const wkHtml = `
+    <div class="week-strip">
+      <span class="wk-label">Past 7 days</span>
+      <span class="wk-stat"><b>${w.delivered}</b> delivered</span>
+      <span class="wk-stat"><b>${w.sold}</b> sold</span>
+      <span class="wk-stat"><b>${esc(money(w.profit))}</b> profit</span>
+      <span class="wk-stat"><b>${w.added}</b> added</span>
+    </div>
+  `;
+
   el.innerHTML = `
+    ${wkHtml}
     <div class="section">
       <div class="section-head">
         <div>
@@ -397,7 +437,7 @@ function renderEmail() {
 }
 
 // ── Modal infrastructure ──────────────────────────────────────────────────────
-function showModal({ title, body, submitText = 'Save', onSubmit, onDelete }) {
+function showModal({ title, body, submitText = 'Save', onSubmit, onDelete, afterMount }) {
   const overlay = document.createElement('div');
   overlay.className = 'modal-overlay';
   overlay.innerHTML = `
@@ -465,6 +505,8 @@ function showModal({ title, body, submitText = 'Save', onSubmit, onDelete }) {
     const first = overlay.querySelector('input:not([type="hidden"]), select, textarea');
     if (first) first.focus();
   }, 50);
+
+  if (afterMount) afterMount(form);
 }
 
 // ── Form fields ───────────────────────────────────────────────────────────────
@@ -484,6 +526,34 @@ function field(label, name, type, opts = {}) {
     return `<label class="field${wide}"><span>${esc(label)}</span><select name="${esc(name)}" ${req}>${optsHtml}</select></label>`;
   }
   return `<label class="field${wide}"><span>${esc(label)}</span><input type="${esc(type)}" name="${esc(name)}" value="${esc(v)}" ${req}></label>`;
+}
+
+async function lookupPostcode(postcode) {
+  const clean = String(postcode || '').replace(/\s+/g, '');
+  if (!clean) return null;
+  try {
+    const res = await fetch(`https://api.postcodes.io/postcodes/${encodeURIComponent(clean)}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.status === 200 ? data.result : null;
+  } catch {
+    return null;
+  }
+}
+
+function wirePostcodeLookup(form) {
+  const postcodeInput = form.querySelector('input[name="postcode"]');
+  if (!postcodeInput) return;
+  postcodeInput.addEventListener('blur', async () => {
+    const r = await lookupPostcode(postcodeInput.value);
+    if (!r) return;
+    const town   = r.admin_district || r.parish || '';
+    const county = r.admin_county   || r.region || '';
+    const townEl   = form.querySelector('input[name="town_city"]');
+    const countyEl = form.querySelector('input[name="county"]');
+    if (town   && townEl)   townEl.value   = town;
+    if (county && countyEl) countyEl.value = county;
+  });
 }
 
 function addressFormHtml(a = {}) {
@@ -528,7 +598,6 @@ function inventoryFormHtml(it = {}) {
       ${field('Shipping (in)', 'shipping_in_cost', 'number', { value: it.shipping_in_cost ?? 0 })}
       ${field('Carrier', 'carrier', 'select', { value: it.carrier || '', options: carrierOpts })}
       ${field('Tracking ref', 'tracking_ref', 'text', { value: it.tracking_ref })}
-      ${field('Tracking URL', 'tracking_url', 'url', { value: it.tracking_url, wide: true })}
       ${field('Acquisition status', 'acquisition_status', 'select', { value: it.acquisition_status || 'pending', options: ACQ_STATUSES })}
       ${field('Date received', 'date_received', 'date', { value: it.date_received })}
       ${field('Recipient', 'recipient_address_id', 'select', { value: it.recipient_address_id || '', options: addrOpts, required: true, wide: true })}
@@ -576,6 +645,7 @@ function openAddressEditor(existing) {
     title: editing ? 'Edit address' : 'New address',
     body:  addressFormHtml(existing || {}),
     submitText: editing ? 'Save changes' : 'Add address',
+    afterMount: (form) => wirePostcodeLookup(form),
     onSubmit: async (form) => {
       const data = readForm(form);
       if (editing) {
@@ -669,7 +739,24 @@ async function refresh() {
   }
 }
 
+// ── Realtime subscription ─────────────────────────────────────────────────────
+let _pendingRefresh = null;
+function scheduleRefresh() {
+  // Coalesce bursts of events into one refresh.
+  if (_pendingRefresh) return;
+  _pendingRefresh = setTimeout(() => { _pendingRefresh = null; refresh(); }, 250);
+}
+
+function subscribeRealtime() {
+  supabase
+    .channel('cardtrack-db')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, scheduleRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'addresses' }, scheduleRefresh)
+    .subscribe();
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 setupNav();
 document.getElementById('refresh').addEventListener('click', refresh);
+subscribeRealtime();
 refresh();

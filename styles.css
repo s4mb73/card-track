@@ -397,6 +397,36 @@ select:hover { background-color: var(--surface-alt); }
 .profit-pos { color: #047857; font-weight: 500; }
 .profit-neg { color: #b91c1c; font-weight: 500; }
 
+/* ── Past 7 days strip ─────────────────────────────────── */
+.week-strip {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  padding: 10px 16px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 14px;
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+.week-strip .wk-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.week-strip .wk-stat {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.week-strip .wk-stat b {
+  color: var(--text);
+  font-weight: 600;
+  margin-right: 4px;
+}
+
 /* ── Editable affordances ──────────────────────────────── */
 table.row-clickable tbody tr { cursor: pointer; }
 .person.clickable { cursor: pointer; }

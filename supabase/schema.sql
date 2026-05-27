@@ -49,7 +49,6 @@ create table if not exists public.inventory (
   shipping_in_cost      numeric(10,2) default 0,
   carrier               text         default '',
   tracking_ref          text         default '',
-  tracking_url          text         default '',
   acquisition_status    text         default 'pending',
   delivery_due_date     date,
   date_received         date,
@@ -157,25 +156,22 @@ on conflict (id) do nothing;
 
 insert into public.inventory
   (id, item, category, set_edition, condition, quantity, source, date_ordered,
-   cost, carrier, tracking_ref, tracking_url, acquisition_status, date_received,
+   cost, carrier, tracking_ref, acquisition_status, date_received,
    recipient_address_id, sale_status, last_notified, last_checked)
 values
   ('inv_001', 'Charizard Holo 1st Ed.', 'Pokémon', 'Base Set 1st Edition', 'Raw', 1,
    'eBay', '2026-05-15', 240, 'royal_mail', 'RM12345678GB',
-   'https://www.royalmail.com/track-your-item#/tracking-results/RM12345678GB',
    'delivered', '2026-05-22', 'addr_001', 'holding', 'delivered', '2026-05-22T09:00:00.000Z'),
 
   ('inv_002', 'Topps 2024 Prizm Box', 'Topps', '2024 Prizm', 'Sealed', 1,
    'Topps', '2026-05-18', 85, 'royal_mail', 'RM67890123GB',
-   'https://www.royalmail.com/track-your-item#/tracking-results/RM67890123GB',
    'in_transit', null, 'addr_002', 'holding', 'in_transit', '2026-05-22T09:00:00.000Z'),
 
   ('inv_003', 'PSA 10 Pikachu', 'Pokémon', '', 'PSA 10', 1,
    'eBay', '2026-05-19', 420, 'evri', 'EV112233445566',
-   'https://www.evri.com/track/EV112233445566',
    'in_transit', null, 'addr_003', 'holding', 'in_transit', '2026-05-22T09:00:00.000Z'),
 
   ('inv_004', 'Topps Chrome Mbappe', 'Topps', 'Topps Chrome', 'Raw', 1,
-   'Topps', '2026-05-21', 55, 'royal_mail', '', '',
+   'Topps', '2026-05-21', 55, 'royal_mail', '',
    'pending', null, 'addr_002', 'holding', null, null)
 on conflict (id) do nothing;
