@@ -15,10 +15,8 @@
 create table if not exists public.addresses (
   id                 text        primary key,
   full_name          text        not null,
-  type               text        default 'Friend',
   email              text        default '',
   phone              text        default '',
-  whatsapp           text        default '',
   preferred_channel  text        default 'sms',
   line1              text        default '',
   line2              text        default '',
@@ -37,31 +35,18 @@ create table if not exists public.inventory (
   id                    text         primary key,
   item                  text         not null,
   category              text         default '',
-  set_edition           text         default '',
-  condition             text         default '',
   quantity              int          default 1,
 
-  -- Buying side
-  source                text         default '',
+  -- Order
   order_reference       text         default '',
   date_ordered          date,
   cost                  numeric(10,2) default 0,
-  shipping_in_cost      numeric(10,2) default 0,
   carrier               text         default '',
   tracking_ref          text         default '',
   acquisition_status    text         default 'pending',
   delivery_due_date     date,
   date_received         date,
   recipient_address_id  text         references public.addresses(id) on delete set null,
-
-  -- Selling side
-  sale_status           text         default 'holding',
-  sold_via              text         default '',
-  sold_to_address_id    text         references public.addresses(id) on delete set null,
-  sale_price            numeric(10,2),
-  fees                  numeric(10,2),
-  shipping_out_cost     numeric(10,2),
-  date_sold             date,
 
   notes                 text         default '',
 
@@ -143,35 +128,35 @@ create policy "Anon write inventory"
 -- ─────────────────────────────────────────────────────────────────────────────
 
 insert into public.addresses
-  (id, full_name, type, phone, whatsapp, preferred_channel, line1, line2, line3,
+  (id, full_name, phone, preferred_channel, line1, line2, line3,
    town_city, county, postcode, country, date_added)
 values
-  ('addr_001', 'Jamie Wilson', 'Friend', '+447700900123', '', 'sms',
+  ('addr_001', 'Jamie Wilson', '+447700900123', 'sms',
    '14 Elm Grove', '', '', 'Brighton', 'East Sussex', 'BN1 4ET', 'UK', '2026-05-15'),
-  ('addr_002', 'Sam Roberts',  'Friend', '+447700900456', '', 'sms',
+  ('addr_002', 'Sam Roberts',  '+447700900456', 'sms',
    '8 Oakfield Road', '', '', 'Manchester', 'Greater Manchester', 'M14 6XR', 'UK', '2026-05-15'),
-  ('addr_003', 'Lisa Chen',    'Friend', '+447700900789', '', 'sms',
+  ('addr_003', 'Lisa Chen',    '+447700900789', 'sms',
    'Flat 2', '27 Park Lane', '', 'Leeds', 'West Yorkshire', 'LS1 2TW', 'UK', '2026-05-15')
 on conflict (id) do nothing;
 
 insert into public.inventory
-  (id, item, category, set_edition, condition, quantity, source, date_ordered,
-   cost, carrier, tracking_ref, acquisition_status, date_received,
-   recipient_address_id, sale_status, last_notified, last_checked)
+  (id, item, category, quantity, date_ordered, cost,
+   carrier, tracking_ref, acquisition_status, date_received,
+   recipient_address_id, last_notified, last_checked)
 values
-  ('inv_001', 'Charizard Holo 1st Ed.', 'Pokémon', 'Base Set 1st Edition', 'Raw', 1,
-   'eBay', '2026-05-15', 240, 'royal_mail', 'RM12345678GB',
-   'delivered', '2026-05-22', 'addr_001', 'holding', 'delivered', '2026-05-22T09:00:00.000Z'),
+  ('inv_001', 'Charizard Holo 1st Ed.', 'Pokémon', 1,
+   '2026-05-15', 240, 'royal_mail', 'RM12345678GB',
+   'delivered', '2026-05-22', 'addr_001', 'delivered', '2026-05-22T09:00:00.000Z'),
 
-  ('inv_002', 'Topps 2024 Prizm Box', 'Topps', '2024 Prizm', 'Sealed', 1,
-   'Topps', '2026-05-18', 85, 'royal_mail', 'RM67890123GB',
-   'in_transit', null, 'addr_002', 'holding', 'in_transit', '2026-05-22T09:00:00.000Z'),
+  ('inv_002', 'Topps 2024 Prizm Box', 'Topps', 1,
+   '2026-05-18', 85, 'royal_mail', 'RM67890123GB',
+   'in_transit', null, 'addr_002', 'in_transit', '2026-05-22T09:00:00.000Z'),
 
-  ('inv_003', 'PSA 10 Pikachu', 'Pokémon', '', 'PSA 10', 1,
-   'eBay', '2026-05-19', 420, 'evri', 'EV112233445566',
-   'in_transit', null, 'addr_003', 'holding', 'in_transit', '2026-05-22T09:00:00.000Z'),
+  ('inv_003', 'PSA 10 Pikachu', 'Pokémon', 1,
+   '2026-05-19', 420, 'evri', 'EV112233445566',
+   'in_transit', null, 'addr_003', 'in_transit', '2026-05-22T09:00:00.000Z'),
 
-  ('inv_004', 'Topps Chrome Mbappe', 'Topps', 'Topps Chrome', 'Raw', 1,
-   'Topps', '2026-05-21', 55, 'royal_mail', '',
-   'pending', null, 'addr_002', 'holding', null, null)
+  ('inv_004', 'Topps Chrome Mbappe', 'Topps', 1,
+   '2026-05-21', 55, 'royal_mail', '',
+   'pending', null, 'addr_002', null, null)
 on conflict (id) do nothing;

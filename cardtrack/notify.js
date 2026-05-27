@@ -49,28 +49,12 @@ async function sendSMS(to, body) {
   return { channel: 'sms', sid: msg.sid, status: msg.status };
 }
 
-async function sendWhatsApp(to, body) {
-  const client = getClient();
-  const from   = process.env.TWILIO_WHATSAPP_FROM;
-  if (!from) throw new Error('TWILIO_WHATSAPP_FROM not set');
-  const waTo  = to.startsWith('whatsapp:') ? to : `whatsapp:${to}`;
-  const msg   = await client.messages.create({ body, from, to: waTo });
-  return { channel: 'whatsapp', sid: msg.sid, status: msg.status };
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 export async function notifyRecipient(item, address, newStatus) {
   const body    = buildMessage(item, address, newStatus);
   const channel = (address.preferred_channel || 'sms').toLowerCase();
 
   try {
-    if (channel === 'whatsapp') {
-      const num = address.whatsapp || address.phone;
-      const r = await sendWhatsApp(num, body);
-      console.log(`  ✓ WhatsApp sent to ${address.full_name}`);
-      return r;
-    }
-
     if (channel === 'email') {
       // Email channel not yet implemented — skip cleanly.
       console.log(`  · Email channel not yet implemented for ${address.full_name}, skipping`);

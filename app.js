@@ -61,7 +61,6 @@ function parseTrackingInput(input) {
   return { carrier: '', ref: '' };
 }
 
-const SALE_STATUSES = ['holding', 'listed', 'sold', 'refunded'];
 const ACQ_STATUSES  = ['pending', 'in_transit', 'out_for_delivery', 'delivered', 'failed'];
 const CATEGORIES    = ['Topps', 'Pokémon'];
 const QUANTITIES    = [1, 2, 3, 4];
@@ -137,18 +136,6 @@ function nextHourlyRun() {
 function statusCell(s) {
   return `<span class="status status-${esc(s)}"><span class="sd"></span>${esc(statusLabel(s))}</span>`;
 }
-function effectiveStatus(item) {
-  return item.sale_status === 'sold' ? 'sold' : item.acquisition_status;
-}
-function profitOf(item) {
-  if (item.sale_status !== 'sold') return null;
-  const sale = Number(item.sale_price) || 0;
-  const cost = Number(item.cost) || 0;
-  const fees = Number(item.fees) || 0;
-  const shipIn  = Number(item.shipping_in_cost)  || 0;
-  const shipOut = Number(item.shipping_out_cost) || 0;
-  return sale - cost - fees - shipIn - shipOut;
-}
 function newId(prefix) {
   return `${prefix}_${crypto.randomUUID().slice(0, 8)}`;
 }
@@ -162,11 +149,8 @@ function isWithinDays(value, days) {
 function weekSummary() {
   const delivered = ITEMS.filter(i =>
     i.acquisition_status === 'delivered' && isWithinDays(i.date_received, 7)).length;
-  const soldThisWeek = ITEMS.filter(i =>
-    i.sale_status === 'sold' && isWithinDays(i.date_sold, 7));
-  const profit = soldThisWeek.reduce((s, i) => s + (profitOf(i) || 0), 0);
   const added = ITEMS.filter(i => isWithinDays(i.created_at, 7)).length;
-  return { delivered, profit, sold: soldThisWeek.length, added };
+  return { delivered, added };
 }
 
 // ── Data loading ──────────────────────────────────────────────────────────────
@@ -184,17 +168,16 @@ async function loadData() {
 
 // ── KPI tiles ─────────────────────────────────────────────────────────────────
 function renderSummary() {
-  const total  = ITEMS.length;
-  const spent  = ITEMS.reduce((s, i) => s + (Number(i.cost) || 0), 0);
-  const active = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status)).length;
-  const sold   = ITEMS.filter(i => i.sale_status === 'sold');
-  const profit = sold.reduce((s, i) => s + (profitOf(i) || 0), 0);
+  const total     = ITEMS.length;
+  const spent     = ITEMS.reduce((s, i) => s + (Number(i.cost) || 0), 0);
+  const active    = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status)).length;
+  const delivered = ITEMS.filter(i => i.acquisition_status === 'delivered').length;
 
   const tiles = [
-    { label: 'Items',      value: total,         tint: 'purple' },
-    { label: 'Spent',      value: money(spent),  tint: 'green'  },
-    { label: 'In transit', value: active,        tint: 'blue'   },
-    { label: 'Profit',     value: money(profit), tint: 'amber'  },
+    { label: 'Items',      value: total,            tint: 'purple' },
+    { label: 'Spent',      value: money(spent),     tint: 'green'  },
+    { label: 'In transit', value: active,           tint: 'blue'   },
+    { label: 'Delivered',  value: delivered,        tint: 'amber'  },
   ];
 
   document.getElementById('summary').innerHTML = tiles.map(t => `
@@ -209,12 +192,11 @@ function renderSummary() {
 function renderInventory() {
   const el = document.getElementById('tab-inventory');
 
-  let filtered;
-  if (inventoryFilter === 'all')        filtered = ITEMS;
-  else if (inventoryFilter === 'sold')  filtered = ITEMS.filter(i => i.sale_status === 'sold');
-  else filtered = ITEMS.filter(i => i.acquisition_status === inventoryFilter && i.sale_status !== 'sold');
+  const filtered = inventoryFilter === 'all'
+    ? ITEMS
+    : ITEMS.filter(i => i.acquisition_status === inventoryFilter);
 
-  const FILTER_KEYS = ['all', ...ACQ_STATUSES, 'sold'];
+  const FILTER_KEYS = ['all', ...ACQ_STATUSES];
   const options = FILTER_KEYS.map(k => `
     <option value="${esc(k)}" ${k === inventoryFilter ? 'selected' : ''}>
       ${k === 'all' ? 'All statuses' : esc(statusLabel(k))}
@@ -232,8 +214,6 @@ function renderInventory() {
     const addr     = ADDRESS_MAP.get(item.recipient_address_id);
     const destName = addr?.full_name || '—';
     const destLoc  = shortAddress(addr);
-    const status   = effectiveStatus(item);
-    const profit   = profitOf(item);
     const subLine  = esc(item.category || '');
 
     return `
@@ -247,12 +227,9 @@ function renderInventory() {
           ${destLoc ? `<span class="muted">${esc(destLoc)}</span>` : ''}
         </td>
         <td>${esc(carrierLabel(item.carrier))}</td>
-        <td>${statusCell(status)}</td>
+        <td>${statusCell(item.acquisition_status)}</td>
         <td>${trackHtml}</td>
         <td class="num">${esc(money(item.cost))}</td>
-        <td class="num">${profit !== null
-          ? `<span class="${profit >= 0 ? 'profit-pos' : 'profit-neg'}">${esc(money(profit))}</span>`
-          : '<span class="muted">—</span>'}</td>
       </tr>
     `;
   }).join('');
@@ -262,8 +239,6 @@ function renderInventory() {
     <div class="week-strip">
       <span class="wk-label">Past 7 days</span>
       <span class="wk-stat"><b>${w.delivered}</b> delivered</span>
-      <span class="wk-stat"><b>${w.sold}</b> sold</span>
-      <span class="wk-stat"><b>${esc(money(w.profit))}</b> profit</span>
       <span class="wk-stat"><b>${w.added}</b> added</span>
     </div>
   `;
@@ -284,8 +259,8 @@ function renderInventory() {
       ${filtered.length ? `
         <table class="row-clickable">
           <thead>
-            <tr><th>Item</th><th>Sending to</th><th>Carrier</th>
-                <th>Status</th><th>Tracking</th><th>Cost</th><th>Profit</th></tr>
+            <tr><th>Item</th><th>Sent to</th><th>Carrier</th>
+                <th>Status</th><th>Tracking</th><th>Cost</th></tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
