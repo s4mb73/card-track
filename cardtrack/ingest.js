@@ -78,39 +78,57 @@ function matchesSite(parsed, site) {
   return true;
 }
 
-const ORDER_TOOL = {
-  name: 'record_order',
-  description: 'Record the order details extracted from an order-confirmation email.',
+// Topps emails come in three flavours, each representing a state
+// transition on the same inventory row keyed by order_reference:
+//
+//   order_confirmation → insert  (status: pending)
+//   shipment           → update  (status: in_transit, carrier + tracking_ref)
+//   cancellation       → update  (status: cancelled)
+//
+// Anything else (marketing, password reset, refund-only) is classified
+// as `other` and skipped.
+const CLASSIFY_TOOL = {
+  name: 'classify_email',
+  description:
+    'Classify a retailer email and extract the relevant fields. Use ' +
+    '"order_confirmation" only for the initial purchase receipt, ' +
+    '"shipment" for "your order is on the way" / dispatch emails (these ' +
+    'usually carry the tracking number), and "cancellation" for ' +
+    'cancellation/refund notifications. Use "other" for everything else.',
   input_schema: {
     type: 'object',
     properties: {
-      is_order:        { type: 'boolean', description: 'true if this email is an order confirmation (not marketing, shipping update, refund, etc.)' },
-      item:            { type: 'string',  description: 'Short product name. Combine multiple line items with " + " if more than one.' },
-      category:        { type: 'string',  enum: ['Topps', 'Pokémon', ''], description: 'Topps or Pokémon if you can tell, empty string otherwise.' },
-      cost:            { type: 'number',  description: 'Total paid in GBP including any shipping the buyer paid. 0 if unknown.' },
-      quantity:        { type: 'integer', description: 'Total items. Default 1.' },
-      order_reference: { type: 'string',  description: 'Order number from the email. Empty if not found.' },
-      date_ordered:    { type: 'string',  description: 'ISO date the order was placed (YYYY-MM-DD). Empty if not found.' },
-      carrier:         { type: 'string',  enum: ['royal_mail', 'evri', 'dpd', 'yodel', 'parcelforce', ''], description: 'Carrier if explicitly mentioned. Empty otherwise.' },
-      tracking_ref:    { type: 'string',  description: 'Tracking number if present in the email. Empty otherwise.' },
+      email_type: {
+        type: 'string',
+        enum: ['order_confirmation', 'shipment', 'cancellation', 'other'],
+      },
+      order_reference: {
+        type: 'string',
+        description: 'Order number from the email (e.g. "UK-1196937-S"). Empty if not found or email_type=other.',
+      },
+      item:            { type: 'string',  description: 'Short product name. Combine multiple line items with " + ". Empty unless email_type=order_confirmation.' },
+      category:        { type: 'string',  enum: ['Topps', 'Pokémon', ''], description: 'Topps or Pokémon if obvious from sender or product. Empty otherwise.' },
+      cost:            { type: 'number',  description: 'Total paid in GBP including shipping. 0 unless email_type=order_confirmation.' },
+      quantity:        { type: 'integer', description: 'Total items. 1 by default for order_confirmation, 0 otherwise.' },
+      date_ordered:    { type: 'string',  description: 'YYYY-MM-DD the order was placed. Empty unless email_type=order_confirmation.' },
+      carrier:         { type: 'string',  enum: ['royal_mail', 'evri', 'dpd', 'yodel', 'parcelforce', ''], description: 'Carrier mentioned in the shipping email. Empty unless email_type=shipment.' },
+      tracking_ref:    { type: 'string',  description: 'Tracking number from the shipping email. Empty unless email_type=shipment.' },
     },
-    required: ['is_order', 'item', 'category', 'cost', 'quantity', 'order_reference', 'date_ordered', 'carrier', 'tracking_ref'],
+    required: ['email_type', 'order_reference', 'item', 'category', 'cost', 'quantity', 'date_ordered', 'carrier', 'tracking_ref'],
   },
 };
 
-async function parseEmailWithClaude({ subject, fromName, text }) {
+async function classifyEmailWithClaude({ subject, fromName, text }) {
   const body = String(text || '').slice(0, 12000);
   const resp = await anthropic.messages.create({
     model: 'claude-haiku-4-5',
     max_tokens: 512,
-    tools: [ORDER_TOOL],
-    tool_choice: { type: 'tool', name: 'record_order' },
+    tools: [CLASSIFY_TOOL],
+    tool_choice: { type: 'tool', name: 'classify_email' },
     messages: [{
       role: 'user',
       content:
-        `Extract order details from this email. If it's not an actual order ` +
-        `confirmation (marketing, shipping notification on its own, refund, ` +
-        `password reset, etc.), set is_order=false and leave the other fields empty.\n\n` +
+        `Classify this email and extract any relevant fields.\n\n` +
         `From: ${fromName}\nSubject: ${subject}\n\n${body}`,
     }],
   });
@@ -191,69 +209,125 @@ async function ingest() {
 
     console.log(`→ ${from} · ${subject}`);
 
-    let parsedOrder;
+    const baseRow = {
+      id: messageId, sender: from, subject,
+      received_at: parsed.date?.toISOString() || null,
+    };
+
+    let cls;
     try {
-      parsedOrder = await parseEmailWithClaude({
+      cls = await classifyEmailWithClaude({
         subject,
         fromName: parsed.from?.value?.[0]?.name || from,
         text: parsed.text || parsed.html || '',
       });
     } catch (err) {
-      console.log(`  ✗ parse failed: ${err.message}`);
+      console.log(`  ✗ classify failed: ${err.message}`);
       failed++;
-      await recordIngestion({
-        id: messageId, sender: from, subject,
-        received_at: parsed.date?.toISOString() || null,
-        status: 'failed', reason: `Claude: ${err.message}`,
-      });
+      await recordIngestion({ ...baseRow, status: 'failed', reason: `Claude: ${err.message}` });
       continue;
     }
 
-    if (!parsedOrder.is_order) {
+    if (cls.email_type === 'other') {
       skipped++;
-      await recordIngestion({
-        id: messageId, sender: from, subject,
-        received_at: parsed.date?.toISOString() || null,
-        status: 'skipped', reason: 'not an order confirmation',
-      });
+      await recordIngestion({ ...baseRow, status: 'skipped', reason: 'not order-related' });
+      continue;
+    }
+    if (!cls.order_reference) {
+      skipped++;
+      await recordIngestion({ ...baseRow, status: 'skipped', reason: `${cls.email_type} email had no order reference` });
       continue;
     }
 
-    const inventoryId = newId('inv');
-    const inventoryRow = {
-      id: inventoryId,
-      item: parsedOrder.item || subject,
-      category: parsedOrder.category || '',
-      quantity: parsedOrder.quantity || 1,
-      order_reference: parsedOrder.order_reference || '',
-      date_ordered: parsedOrder.date_ordered || null,
-      cost: parsedOrder.cost || 0,
-      carrier: parsedOrder.carrier || '',
-      tracking_ref: parsedOrder.tracking_ref || '',
-      acquisition_status: 'pending',
-      recipient_address_id: null,
-    };
+    if (cls.email_type === 'order_confirmation') {
+      // Dedupe: if we've already ingested an inventory row with this
+      // order_reference (e.g. user re-ran the scrape on a wider window
+      // or the same email landed twice), don't double-insert.
+      const { data: dup } = await supabase
+        .from('inventory').select('id').eq('order_reference', cls.order_reference).maybeSingle();
+      if (dup) {
+        skipped++;
+        console.log(`  · order ${cls.order_reference} already in inventory (${dup.id})`);
+        await recordIngestion({ ...baseRow, inventory_id: dup.id, status: 'skipped', reason: `order ${cls.order_reference} already in inventory` });
+        continue;
+      }
 
-    const { error: insErr } = await supabase.from('inventory').insert(inventoryRow);
-    if (insErr) {
-      console.log(`  ✗ insert failed: ${insErr.message}`);
+      const inventoryId  = newId('inv');
+      const inventoryRow = {
+        id: inventoryId,
+        item: cls.item || subject,
+        category: cls.category || '',
+        quantity: cls.quantity || 1,
+        order_reference: cls.order_reference,
+        date_ordered: cls.date_ordered || null,
+        cost: cls.cost || 0,
+        carrier: '',
+        tracking_ref: '',
+        acquisition_status: 'pending',
+        recipient_address_id: null,
+      };
+      const { error: insErr } = await supabase.from('inventory').insert(inventoryRow);
+      if (insErr) {
+        console.log(`  ✗ insert failed: ${insErr.message}`);
+        failed++;
+        await recordIngestion({ ...baseRow, status: 'failed', reason: `Supabase: ${insErr.message}` });
+        continue;
+      }
+      inserted++;
+      console.log(`  ✓ inserted ${inventoryId} — ${inventoryRow.item}`);
+      await recordIngestion({ ...baseRow, inventory_id: inventoryId, status: 'inserted', reason: '' });
+      continue;
+    }
+
+    // shipment + cancellation both look the order up by reference and
+    // patch the existing inventory row. If we haven't ingested the
+    // confirmation yet (shipment arrived first, or the order was
+    // placed before our 30-day window), skip with a clear reason.
+    const { data: existing } = await supabase
+      .from('inventory')
+      .select('id, item, acquisition_status, carrier, tracking_ref')
+      .eq('order_reference', cls.order_reference)
+      .maybeSingle();
+
+    if (!existing) {
+      skipped++;
+      console.log(`  · no matching order ${cls.order_reference} in inventory`);
+      await recordIngestion({ ...baseRow, status: 'skipped', reason: `no order ${cls.order_reference} in inventory yet` });
+      continue;
+    }
+
+    const update = {};
+    if (cls.email_type === 'shipment') {
+      if (cls.carrier)      update.carrier      = cls.carrier;
+      if (cls.tracking_ref) update.tracking_ref = cls.tracking_ref;
+      // Don't downgrade rows that have already moved past in_transit.
+      if (['pending', '', null].includes(existing.acquisition_status)) {
+        update.acquisition_status = 'in_transit';
+      }
+    } else { // cancellation
+      update.acquisition_status = 'cancelled';
+    }
+
+    if (Object.keys(update).length === 0) {
+      skipped++;
+      console.log(`  · ${cls.email_type} for ${cls.order_reference} carried no new info`);
+      await recordIngestion({ ...baseRow, inventory_id: existing.id, status: 'skipped', reason: `${cls.email_type} carried no new info` });
+      continue;
+    }
+
+    const { error: updErr } = await supabase.from('inventory').update(update).eq('id', existing.id);
+    if (updErr) {
+      console.log(`  ✗ update failed: ${updErr.message}`);
       failed++;
-      await recordIngestion({
-        id: messageId, sender: from, subject,
-        received_at: parsed.date?.toISOString() || null,
-        status: 'failed', reason: `Supabase: ${insErr.message}`,
-      });
+      await recordIngestion({ ...baseRow, inventory_id: existing.id, status: 'failed', reason: `Supabase: ${updErr.message}` });
       continue;
     }
-
     inserted++;
-    console.log(`  ✓ inserted ${inventoryId} — ${inventoryRow.item}`);
-    await recordIngestion({
-      id: messageId, sender: from, subject,
-      received_at: parsed.date?.toISOString() || null,
-      inventory_id: inventoryId,
-      status: 'inserted', reason: '',
-    });
+    const summary = cls.email_type === 'shipment'
+      ? `tracking=${cls.tracking_ref || '(none)'} carrier=${cls.carrier || '(none)'}`
+      : 'cancelled';
+    console.log(`  ✓ ${cls.email_type} → ${existing.id} (${summary})`);
+    await recordIngestion({ ...baseRow, inventory_id: existing.id, status: 'inserted', reason: `${cls.email_type}: ${summary}` });
   }
 
   await client.logout();

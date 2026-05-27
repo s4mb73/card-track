@@ -17,6 +17,7 @@ const STATUS_LABELS = {
   out_for_delivery: 'Out for delivery',
   delivered:        'Delivered',
   failed:           'Delivery failed',
+  cancelled:        'Cancelled',
   unknown:          'Unknown',
   sold:             'Sold',
 };
@@ -61,10 +62,10 @@ function parseTrackingInput(input) {
   return { carrier: '', ref: '' };
 }
 
-const ACQ_STATUSES  = ['pending', 'in_transit', 'out_for_delivery', 'delivered', 'failed'];
+const ACQ_STATUSES  = ['pending', 'in_transit', 'out_for_delivery', 'delivered', 'failed', 'cancelled'];
 const CATEGORIES    = ['Topps', 'Pokémon'];
 const QUANTITIES    = [1, 2, 3, 4];
-const NOTIFY_TRIGGERS = ['in_transit', 'out_for_delivery', 'delivered', 'failed'];
+const NOTIFY_TRIGGERS = ['in_transit', 'out_for_delivery', 'delivered', 'failed', 'cancelled'];
 const ACTIVE_STATUSES = ['pending', 'in_transit', 'out_for_delivery'];
 const INGEST_STATUS_LABELS = {
   inserted: 'Inserted',
