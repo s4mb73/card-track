@@ -294,13 +294,16 @@ async function ingest() {
 
     if (cls.email_type === 'order_confirmation') {
       // Dedup against existing inventory rows so re-scrapes don't pile up
-      // duplicates of the same order_reference.
-      const { data: dup } = await supabase
-        .from('inventory').select('id').eq('order_reference', cls.order_reference).maybeSingle();
-      if (dup) {
+      // duplicates of the same order_reference. Uses .limit(1) instead of
+      // .maybeSingle() so the dedup itself doesn't blow up when the table
+      // already has multiple rows for this reference (e.g. left over from
+      // an earlier no-dedup test run).
+      const { data: dups } = await supabase
+        .from('inventory').select('id').eq('order_reference', cls.order_reference).limit(1);
+      if (dups && dups.length) {
         skipped++;
-        console.log(`  · order ${cls.order_reference} already in inventory (${dup.id})`);
-        await recordIngestion({ ...baseRow, inventory_id: dup.id, status: 'skipped', reason: `order ${cls.order_reference} already in inventory` });
+        console.log(`  · order ${cls.order_reference} already in inventory (${dups[0].id})`);
+        await recordIngestion({ ...baseRow, inventory_id: dups[0].id, status: 'skipped', reason: `order ${cls.order_reference} already in inventory` });
         continue;
       }
 
