@@ -290,9 +290,13 @@ async function ingest() {
       .maybeSingle();
 
     if (!existing) {
+      // Don't record this in email_ingestions — if we did, next scrape
+      // would short-circuit at alreadyProcessed() and never retry. The
+      // confirmation might land in a later run (wider window, or the
+      // order was placed outside our 30-day search the first time), and
+      // we want the shipment/cancellation to apply when it does.
       skipped++;
-      console.log(`  · no matching order ${cls.order_reference} in inventory`);
-      await recordIngestion({ ...baseRow, status: 'skipped', reason: `no order ${cls.order_reference} in inventory yet` });
+      console.log(`  · no matching order ${cls.order_reference} in inventory — will retry next run`);
       continue;
     }
 
