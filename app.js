@@ -103,6 +103,7 @@ let ITEMS = [];
 let ADDRESSES = [];
 let ADDRESS_MAP = new Map();
 let inventoryFilter = 'all';
+let SELECTED_INV    = new Set();
 
 // ── Generic helpers ───────────────────────────────────────────────────────────
 function esc(value) {
@@ -227,6 +228,12 @@ function renderInventory() {
     </option>
   `).join('');
 
+  // Drop any selections whose row no longer exists in the filtered view —
+  // e.g. you select two rows, change the status filter, then change back.
+  const visibleIds = new Set(filtered.map(i => i.id));
+  for (const id of SELECTED_INV) if (!visibleIds.has(id)) SELECTED_INV.delete(id);
+  const allChecked = filtered.length > 0 && filtered.every(i => SELECTED_INV.has(i.id));
+
   const rows = filtered.map(item => {
     const ref = item.tracking_ref || '';
     const url = safeUrl(trackingUrl(item.carrier, ref));
@@ -239,9 +246,13 @@ function renderInventory() {
     const destName = addr?.full_name || '—';
     const destLoc  = shortAddress(addr);
     const subLine  = esc(item.category || '');
+    const checked  = SELECTED_INV.has(item.id);
 
     return `
-      <tr data-kind="inv" data-id="${esc(item.id)}">
+      <tr data-kind="inv" data-id="${esc(item.id)}" class="${checked ? 'is-selected' : ''}">
+        <td class="select-cell" data-stop>
+          <input type="checkbox" class="row-select" data-id="${esc(item.id)}" ${checked ? 'checked' : ''}>
+        </td>
         <td>
           <div class="primary">${esc(item.item)}</div>
           ${subLine ? `<span class="muted">${subLine}</span>` : ''}
@@ -276,6 +287,7 @@ function renderInventory() {
           <div class="sub">${filtered.length} of ${ITEMS.length} item${ITEMS.length === 1 ? '' : 's'}</div>
         </div>
         <div class="toolbar">
+          ${SELECTED_INV.size ? `<button class="btn-danger btn-add" id="bulk-delete-inv">Delete ${SELECTED_INV.size} item${SELECTED_INV.size === 1 ? '' : 's'}</button>` : ''}
           <select id="status-filter">${options}</select>
           <button class="btn-primary btn-add" id="add-inv">+ Add item</button>
         </div>
@@ -283,8 +295,11 @@ function renderInventory() {
       ${filtered.length ? `
         <table class="row-clickable">
           <thead>
-            <tr><th>Item</th><th>Sent to</th><th>Carrier</th>
-                <th>Status</th><th>Tracking</th><th>Cost</th></tr>
+            <tr>
+              <th class="select-cell"><input type="checkbox" id="select-all-inv" ${allChecked ? 'checked' : ''}></th>
+              <th>Item</th><th>Sent to</th><th>Carrier</th>
+              <th>Status</th><th>Tracking</th><th>Cost</th>
+            </tr>
           </thead>
           <tbody>${rows}</tbody>
         </table>
@@ -297,6 +312,28 @@ function renderInventory() {
     renderInventory();
   });
   document.getElementById('add-inv').addEventListener('click', () => openInventoryEditor());
+
+  el.querySelectorAll('.row-select').forEach(cb => {
+    cb.addEventListener('change', e => {
+      const id = e.target.dataset.id;
+      if (e.target.checked) SELECTED_INV.add(id);
+      else                  SELECTED_INV.delete(id);
+      renderInventory();
+    });
+  });
+
+  const selectAll = document.getElementById('select-all-inv');
+  if (selectAll) {
+    selectAll.addEventListener('change', e => {
+      if (e.target.checked) filtered.forEach(i => SELECTED_INV.add(i.id));
+      else                  filtered.forEach(i => SELECTED_INV.delete(i.id));
+      renderInventory();
+    });
+  }
+
+  const bulkBtn = document.getElementById('bulk-delete-inv');
+  if (bulkBtn) bulkBtn.addEventListener('click', bulkDeleteInventory);
+
   el.querySelectorAll('tbody tr').forEach(tr => {
     tr.addEventListener('click', e => {
       if (e.target.closest('[data-stop]')) return;
@@ -304,6 +341,18 @@ function renderInventory() {
       if (item) openInventoryEditor(item);
     });
   });
+}
+
+async function bulkDeleteInventory() {
+  const ids = [...SELECTED_INV];
+  if (!ids.length) return;
+  const n = ids.length;
+  if (!confirm(`Delete ${n} item${n === 1 ? '' : 's'}? This can't be undone.`)) return;
+  const { error } = await supabase.from('inventory').delete().in('id', ids);
+  if (error) { alert(`Delete failed: ${error.message}`); return; }
+  SELECTED_INV.clear();
+  // Realtime will re-render too, but kicking it here avoids the brief stale state.
+  renderInventory();
 }
 
 // ── Addresses ─────────────────────────────────────────────────────────────────

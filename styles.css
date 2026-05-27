@@ -546,6 +546,10 @@ table.addr-table th.num { text-align: right; }
 .btn-add { padding: 7px 13px; font-size: 13px; }
 .btn-sm  { padding: 4px 10px; font-size: 12px; }
 
+th.select-cell, td.select-cell { width: 36px; padding-right: 0; }
+td.select-cell input, th.select-cell input { cursor: pointer; }
+tr.is-selected { background: rgba(99, 102, 241, 0.07); }
+
 .ingest-progress { margin-top: 12px; }
 .ingest-progress-line {
   font-size: 13px;
