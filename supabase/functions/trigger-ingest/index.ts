@@ -1,15 +1,13 @@
 // Supabase Edge Function: trigger-ingest
 //
-// Lets the dashboard kick off the "CardTrack email ingest" GitHub Actions
-// workflow on demand. Holds the GitHub token server-side so it never
-// reaches the browser.
+// Thin proxy from the dashboard to the Railway-hosted scraper service.
+// Holds the shared INGEST_TOKEN server-side so it never reaches the
+// browser — the dashboard only knows that POSTing here, with an
+// account_id + site_id in the body, will kick off a scrape.
 //
 // Secrets (set with `supabase secrets set ...`):
-//   GH_TOKEN     — fine-grained PAT with Actions: read+write on this repo
-//   GH_OWNER     — repo owner, e.g. "s4mb73"
-//   GH_REPO      — repo name,  e.g. "card-track"
-//   GH_WORKFLOW  — workflow filename, e.g. "ingest.yml" (defaults to that)
-//   GH_REF       — branch to run on, defaults to "main"
+//   INGEST_URL    — full Railway URL, e.g. https://cardtrack-production.up.railway.app
+//   INGEST_TOKEN  — shared bearer the Railway service expects in X-Ingest-Token
 
 import { serve } from 'https://deno.land/std@0.224.0/http/server.ts';
 
@@ -18,50 +16,30 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
-
-function json(body: unknown, status = 200) {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
-}
+const json = (body: unknown, status = 200) =>
+  new Response(JSON.stringify(body), { status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } });
 
 serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   if (req.method !== 'POST')    return json({ error: 'Method not allowed' }, 405);
 
-  const token    = Deno.env.get('GH_TOKEN');
-  const owner    = Deno.env.get('GH_OWNER');
-  const repo     = Deno.env.get('GH_REPO');
-  const workflow = Deno.env.get('GH_WORKFLOW') ?? 'ingest.yml';
-  const ref      = Deno.env.get('GH_REF')      ?? 'main';
-
-  if (!token || !owner || !repo) {
-    return json({ error: 'Function is missing one of GH_TOKEN, GH_OWNER, GH_REPO' }, 500);
-  }
+  const baseUrl = (Deno.env.get('INGEST_URL') || '').replace(/\/+$/, '');
+  const token   = Deno.env.get('INGEST_TOKEN');
+  if (!baseUrl || !token) return json({ error: 'INGEST_URL and INGEST_TOKEN must be set' }, 500);
 
   let body: { account_id?: string; site_id?: string } = {};
   try { body = await req.json(); } catch { /* empty body OK */ }
   const { account_id, site_id } = body;
-  if (!account_id || !site_id) {
-    return json({ error: 'Missing account_id or site_id in request body' }, 400);
-  }
+  if (!account_id || !site_id) return json({ error: 'Missing account_id or site_id in request body' }, 400);
 
-  const url = `https://api.github.com/repos/${owner}/${repo}/actions/workflows/${workflow}/dispatches`;
-  const r = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization:          `Bearer ${token}`,
-      Accept:                 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'User-Agent':           'cardtrack-trigger-ingest',
-    },
-    body: JSON.stringify({ ref, inputs: { account_id, site_id } }),
+  const r = await fetch(`${baseUrl}/ingest`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Ingest-Token': token },
+    body:    JSON.stringify({ account_id, site_id }),
   });
-
-  // workflow_dispatch returns 204 No Content on success.
-  if (r.status === 204) return json({ ok: true, workflow, ref, account_id, site_id });
-
   const detail = await r.text();
-  return json({ error: `GitHub responded ${r.status}: ${detail}` }, r.status);
+  if (!r.ok) return json({ error: `Railway responded ${r.status}: ${detail}` }, r.status);
+
+  try { return json(JSON.parse(detail)); }
+  catch { return json({ ok: true, message: detail || 'started' }); }
 });

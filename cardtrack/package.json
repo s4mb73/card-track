@@ -1,22 +1,26 @@
 {
   "name": "cardtrack",
   "version": "1.0.0",
-  "description": "Hourly Supabase-backed parcel tracker for Pokemon and Topps card orders, with Twilio SMS/WhatsApp notifications.",
+  "description": "Supabase-backed parcel tracker for Pokemon and Topps card orders. Runs as a Railway service that scrapes Gmail and polls carriers, posting status updates to Discord.",
   "type": "module",
-  "main": "checker.js",
+  "main": "server.js",
   "scripts": {
-    "start": "node checker.js",
-    "check": "node checker.js",
-    "ingest": "node ingest.js"
+    "start":  "node server.js",
+    "ingest": "node ingest.js",
+    "check":  "node checker.js"
   },
-  "keywords": ["pokemon", "topps", "cards", "tracking", "supabase", "twilio"],
+  "keywords": ["pokemon", "topps", "cards", "tracking", "supabase", "discord"],
   "license": "ISC",
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.40.0",
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.0.0",
+    "express": "^4.21.0",
     "imapflow": "^1.0.169",
     "mailparser": "^3.7.1",
-    "twilio": "^5.0.0"
+    "node-cron": "^3.0.3"
   }
 }
