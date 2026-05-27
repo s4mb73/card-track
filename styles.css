@@ -542,6 +542,7 @@ table.addr-table th.num { text-align: right; }
 }
 
 .btn-add { padding: 7px 13px; font-size: 13px; }
+.btn-sm  { padding: 4px 10px; font-size: 12px; }
 
 .btn-secondary {
   background: var(--surface);

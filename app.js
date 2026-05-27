@@ -388,35 +388,83 @@ function renderNotifications() {
   const states = ITEMS.map(notifyState);
   const sent   = states.filter(s => s.cls === 'ok').length;
   const queued = states.filter(s => s.cls === 'warn').length;
+  const queuedIds = ITEMS.filter((_, i) => states[i].cls === 'warn').map(i => i.id);
+
   const rows = ITEMS.map((item, i) => {
     const st   = states[i];
     const addr = ADDRESS_MAP.get(item.recipient_address_id);
+    const hasPhone = !!(addr && String(addr.phone || '').replace(/\D/g, ''));
+    const queuedRow = st.cls === 'warn';
     return `
       <tr>
-        <td><div class="primary">${esc(addr?.full_name || '—')}</div></td>
+        <td>
+          <div class="primary">${esc(addr?.full_name || '—')}</div>
+          ${addr && !hasPhone ? '<span class="muted">No phone on file</span>' : ''}
+        </td>
         <td>${esc(item.item)}</td>
         <td>${statusCell(item.acquisition_status)}</td>
         <td>${item.last_notified ? esc(statusLabel(item.last_notified)) : '<span class="muted">Never</span>'}</td>
         <td><span class="pill ${st.cls}">${esc(st.label)}</span></td>
+        <td class="num">
+          ${queuedRow && hasPhone
+            ? `<button class="btn-secondary btn-sm" data-send-one="${esc(item.id)}">Send</button>`
+            : ''}
+        </td>
       </tr>
     `;
   }).join('');
+
   el.innerHTML = `
     <div class="section">
       <div class="section-head">
         <div>
           <h2>Notification history</h2>
-          <div class="sub">${sent} sent &middot; ${queued} queued for the next check</div>
+          <div class="sub">${sent} sent &middot; ${queued} queued &middot; sending as <code>CardTrack</code> via SMS</div>
         </div>
+        <button class="btn-primary btn-add" id="send-queued" ${queuedIds.length ? '' : 'disabled'}>
+          Send queued${queuedIds.length ? ` (${queuedIds.length})` : ''}
+        </button>
       </div>
+      <div id="send-status" class="run-status" style="display:none"></div>
       ${ITEMS.length ? `
         <table>
-          <thead><tr><th>Recipient</th><th>Item</th><th>Status</th><th>Last notified</th><th>State</th></tr></thead>
+          <thead><tr><th>Recipient</th><th>Item</th><th>Status</th><th>Last notified</th><th>State</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
       ` : '<div class="empty">No items to notify on.</div>'}
     </div>
   `;
+
+  const sendBtn = document.getElementById('send-queued');
+  if (sendBtn) sendBtn.addEventListener('click', () => sendNotifications(queuedIds));
+
+  el.querySelectorAll('[data-send-one]').forEach(btn => {
+    btn.addEventListener('click', () => sendNotifications([btn.dataset.sendOne]));
+  });
+}
+
+async function sendNotifications(inventoryIds) {
+  if (!inventoryIds?.length) return;
+  const status = document.getElementById('send-status');
+  status.style.display = 'block';
+  status.className = 'run-status muted';
+  status.textContent = `Sending ${inventoryIds.length} message${inventoryIds.length === 1 ? '' : 's'}…`;
+  try {
+    const { data, error } = await supabase.functions.invoke('send-sms', {
+      method: 'POST',
+      body:   { inventory_ids: inventoryIds },
+    });
+    if (error) throw new Error(data?.error || error.message);
+    const sent = data?.sent ?? 0;
+    const failed = data?.failed ?? 0;
+    status.className = failed ? 'run-status warn' : 'run-status ok';
+    status.textContent = failed
+      ? `Sent ${sent}, ${failed} failed. ${(data.results || []).filter(r => !r.ok).map(r => r.error).join(' · ')}`
+      : `Sent ${sent} message${sent === 1 ? '' : 's'}.`;
+  } catch (err) {
+    status.className = 'run-status warn';
+    status.textContent = `Send failed: ${err.message}`;
+  }
 }
 
 // ── Email ─────────────────────────────────────────────────────────────────────
