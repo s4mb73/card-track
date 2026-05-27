@@ -155,8 +155,14 @@ async function loadData() {
   if (invRes.error)  throw new Error(`Inventory: ${invRes.error.message}`);
   if (addrRes.error) throw new Error(`Addresses: ${addrRes.error.message}`);
   // email_ingestions may not exist yet (before the user runs the migration);
-  // treat that as "empty" rather than fatal.
-  if (ingRes.error && !/relation .* does not exist/i.test(ingRes.error.message)) {
+  // treat that as "empty" rather than fatal. Supabase REST and direct
+  // Postgres word the missing-table error differently, so match both.
+  const ingMissing = ingRes.error && (
+    /relation .* does not exist/i.test(ingRes.error.message) ||
+    /could not find the table/i.test(ingRes.error.message)   ||
+    ingRes.error.code === '42P01' || ingRes.error.code === 'PGRST205'
+  );
+  if (ingRes.error && !ingMissing) {
     throw new Error(`Email ingestions: ${ingRes.error.message}`);
   }
   ITEMS       = invRes.data  ?? [];
