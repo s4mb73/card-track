@@ -75,6 +75,7 @@ const INGEST_STATUS_LABELS = {
 let INGESTIONS     = [];
 let EMAIL_ACCOUNTS = [];
 let SITES          = [];
+let WEBHOOKS       = [];
 let emailFilter    = 'all';     // 'all' | 'inserted' | 'skipped' — filters Recent activity table
 let selectedAccount = '';       // Email tab dropdowns; persisted in localStorage
 let selectedSite    = '';
@@ -161,24 +162,27 @@ function isMissingTableError(err) {
 }
 
 async function loadData() {
-  const [invRes, addrRes, ingRes, acctRes, siteRes] = await Promise.all([
+  const [invRes, addrRes, ingRes, acctRes, siteRes, hookRes] = await Promise.all([
     supabase.from('inventory').select('*').order('id'),
     supabase.from('addresses').select('*').order('id'),
     supabase.from('email_ingestions').select('*').order('ingested_at', { ascending: false }).limit(50),
-    // Anon can't read app_password, so we explicitly request only safe columns.
+    // Anon can't read app_password / webhook url, so we ask for only safe columns.
     supabase.from('email_accounts').select('id, label, address, created_at').order('created_at'),
     supabase.from('sites').select('*').order('label'),
+    supabase.from('webhooks').select('id, label, active, created_at').order('created_at'),
   ]);
   if (invRes.error)  throw new Error(`Inventory: ${invRes.error.message}`);
   if (addrRes.error) throw new Error(`Addresses: ${addrRes.error.message}`);
   if (ingRes.error  && !isMissingTableError(ingRes.error))  throw new Error(`Email ingestions: ${ingRes.error.message}`);
   if (acctRes.error && !isMissingTableError(acctRes.error)) throw new Error(`Email accounts: ${acctRes.error.message}`);
   if (siteRes.error && !isMissingTableError(siteRes.error)) throw new Error(`Sites: ${siteRes.error.message}`);
+  if (hookRes.error && !isMissingTableError(hookRes.error)) throw new Error(`Webhooks: ${hookRes.error.message}`);
   ITEMS          = invRes.data  ?? [];
   ADDRESSES      = addrRes.data ?? [];
   INGESTIONS     = ingRes.data  ?? [];
   EMAIL_ACCOUNTS = acctRes.data ?? [];
   SITES          = siteRes.data ?? [];
+  WEBHOOKS       = hookRes.data ?? [];
   ADDRESS_MAP    = new Map(ADDRESSES.map(a => [a.id, a]));
 }
 
@@ -413,7 +417,11 @@ function renderNotifications() {
       <div class="section-head">
         <div>
           <h2>Notification history</h2>
-          <div class="sub">${sent} sent &middot; ${queued} queued &middot; posting to Discord webhook</div>
+          <div class="sub">${sent} sent &middot; ${queued} queued &middot; ${
+            WEBHOOKS.filter(w => w.active !== false).length
+              ? `posting to ${WEBHOOKS.filter(w => w.active !== false).length} Discord webhook${WEBHOOKS.filter(w => w.active !== false).length === 1 ? '' : 's'}`
+              : `<a href="#" data-go-settings>add a webhook in Settings</a> to post`
+          }</div>
         </div>
         <button class="btn-primary btn-add" id="send-queued" ${queuedIds.length ? '' : 'disabled'}>
           Post queued${queuedIds.length ? ` (${queuedIds.length})` : ''}
@@ -434,6 +442,10 @@ function renderNotifications() {
 
   el.querySelectorAll('[data-send-one]').forEach(btn => {
     btn.addEventListener('click', () => sendNotifications([btn.dataset.sendOne]));
+  });
+
+  el.querySelectorAll('[data-go-settings]').forEach(a => {
+    a.addEventListener('click', e => { e.preventDefault(); switchTab('settings'); });
   });
 }
 
@@ -717,6 +729,14 @@ function renderSettings() {
     </tr>
   `).join('');
 
+  const webhookRows = WEBHOOKS.map(w => `
+    <tr data-kind="webhook" data-id="${esc(w.id)}">
+      <td><div class="primary">${esc(w.label || 'Discord webhook')}</div></td>
+      <td><span class="muted">https://discord.com/api/webhooks/••••</span></td>
+      <td>${w.active === false ? '<span class="pill muted">Inactive</span>' : '<span class="pill ok">Active</span>'}</td>
+    </tr>
+  `).join('');
+
   el.innerHTML = `
     <div class="section">
       <div class="section-head">
@@ -749,10 +769,27 @@ function renderSettings() {
         </table>
       ` : '<div class="empty">No sites configured.</div>'}
     </div>
+
+    <div class="section">
+      <div class="section-head">
+        <div>
+          <h2>Discord webhooks</h2>
+          <div class="sub">Where the Notifications tab posts status updates. URL is stored encrypted-at-rest and never sent back to the browser.</div>
+        </div>
+        <button class="btn-primary btn-add" id="add-webhook">+ Add webhook</button>
+      </div>
+      ${WEBHOOKS.length ? `
+        <table class="row-clickable">
+          <thead><tr><th>Webhook</th><th>URL</th><th>Status</th></tr></thead>
+          <tbody>${webhookRows}</tbody>
+        </table>
+      ` : '<div class="empty">No webhooks yet. Add one to enable Discord notifications.</div>'}
+    </div>
   `;
 
   document.getElementById('add-acct').addEventListener('click', () => openEmailAccountEditor());
   document.getElementById('add-site').addEventListener('click', () => openSiteEditor());
+  document.getElementById('add-webhook').addEventListener('click', () => openWebhookEditor());
 
   el.querySelectorAll('tr[data-kind="acct"]').forEach(tr => {
     tr.addEventListener('click', () => {
@@ -765,6 +802,65 @@ function renderSettings() {
       const s = SITES.find(x => x.id === tr.dataset.id);
       if (s) openSiteEditor(s);
     });
+  });
+  el.querySelectorAll('tr[data-kind="webhook"]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const w = WEBHOOKS.find(x => x.id === tr.dataset.id);
+      if (w) openWebhookEditor(w);
+    });
+  });
+}
+
+function webhookFormHtml(w = {}) {
+  const editing = !!w.id;
+  return `
+    <div class="form-grid">
+      ${field('Label', 'label', 'text', { value: w.label, required: true, wide: true })}
+      ${field(editing ? 'New webhook URL (leave blank to keep current)' : 'Webhook URL',
+              'url', 'url', { value: '', required: !editing, wide: true })}
+      ${field('Active', 'active', 'select', {
+        value: w.active === false ? 'false' : 'true',
+        options: [{ value: 'true', label: 'Active' }, { value: 'false', label: 'Inactive' }],
+        wide: true,
+      })}
+    </div>
+    <p style="color: var(--text-muted); font-size: 12.5px; margin-top: 8px;">
+      In Discord: channel settings → Integrations → Webhooks → New Webhook → Copy URL.
+      Should start with <code>https://discord.com/api/webhooks/</code>.
+    </p>
+  `;
+}
+
+function openWebhookEditor(existing) {
+  const editing = !!existing;
+  showModal({
+    title: editing ? 'Edit webhook' : 'Add Discord webhook',
+    body:  webhookFormHtml(existing || {}),
+    submitText: editing ? 'Save changes' : 'Add webhook',
+    onSubmit: async (form) => {
+      const data = readForm(form);
+      data.active = data.active !== 'false';
+      if (data.url) data.url = data.url.trim();
+      if (editing) {
+        // Same pattern as email_accounts: blank URL means "don't overwrite".
+        if (!data.url) delete data.url;
+        const { error } = await supabase.from('webhooks').update(data).eq('id', existing.id);
+        if (error) throw error;
+      } else {
+        if (!data.url || !/^https:\/\/discord\.com\/api\/webhooks\//.test(data.url)) {
+          throw new Error('URL must start with https://discord.com/api/webhooks/');
+        }
+        data.id = newId('hook');
+        const { error } = await supabase.from('webhooks').insert(data);
+        if (error) throw error;
+      }
+    },
+    onDelete: editing
+      ? async () => {
+          const { error } = await supabase.from('webhooks').delete().eq('id', existing.id);
+          if (error) throw error;
+        }
+      : null,
   });
 }
 
@@ -1190,6 +1286,7 @@ function subscribeRealtime() {
     .on('postgres_changes', { event: '*', schema: 'public', table: 'email_ingestions' }, scheduleRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'email_accounts' },   scheduleRefresh)
     .on('postgres_changes', { event: '*', schema: 'public', table: 'sites' },             scheduleRefresh)
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'webhooks' },          scheduleRefresh)
     .subscribe();
 }
 

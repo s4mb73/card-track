@@ -4,13 +4,14 @@
 // has crossed a notification trigger (in_transit, out_for_delivery,
 // delivered, failed). The dashboard calls this with
 // `{ inventory_ids: [...] }`; the function looks each row up,
-// formats one embed per row, fires them at the configured Discord
-// webhook, and stamps `inventory.last_notified` on success so the
-// row drops out of the queue.
+// formats one embed per row, fires them at every active webhook
+// configured in the `webhooks` table, and stamps
+// `inventory.last_notified` on success so the row drops out of the
+// queue.
 //
-// Secrets:
-//   DISCORD_WEBHOOK_URL  — full webhook URL from a Discord channel
-//                          (Channel settings → Integrations → Webhooks → Copy URL)
+// Webhook URLs live in the DB (Settings → Webhooks). The function
+// uses the service-role key, which bypasses the column-level
+// REVOKE that keeps anon from reading them.
 
 import { serve }        from 'https://deno.land/std@0.224.0/http/server.ts';
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
@@ -91,10 +92,8 @@ serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
   if (req.method !== 'POST')    return json({ error: 'Method not allowed' }, 405);
 
-  const webhookUrl  = Deno.env.get('DISCORD_WEBHOOK_URL');
   const supabaseUrl = Deno.env.get('SUPABASE_URL');
   const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-  if (!webhookUrl)               return json({ error: 'DISCORD_WEBHOOK_URL must be set' }, 500);
   if (!supabaseUrl || !supabaseKey) return json({ error: 'Function missing Supabase env vars' }, 500);
 
   let body: { inventory_ids?: string[] } = {};
@@ -103,6 +102,16 @@ serve(async (req) => {
   if (!ids.length) return json({ error: 'inventory_ids must be a non-empty array' }, 400);
 
   const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false } });
+
+  // Pull every active webhook. Service role bypasses the column-level
+  // REVOKE on `url` that hides the value from anon SELECTs.
+  const { data: hooks, error: hookErr } = await supabase
+    .from('webhooks')
+    .select('id, label, url, active')
+    .eq('active', true);
+  if (hookErr)        return json({ error: `Loading webhooks: ${hookErr.message}` }, 500);
+  const targets = (hooks || []).filter(h => h.url);
+  if (!targets.length) return json({ error: 'No active webhooks configured in Settings' }, 400);
 
   const { data: items, error: itemErr } = await supabase
     .from('inventory')
@@ -125,7 +134,9 @@ serve(async (req) => {
       if (item.last_notified === item.acquisition_status) throw new Error('Already notified for this status');
       const addr  = addrMap.get(item.recipient_address_id);
       const embed = buildEmbed(item, addr);
-      await postToDiscord(webhookUrl, embed);
+      // Post to every active webhook. If any one fails we fail the row,
+      // so a misconfigured hook doesn't silently swallow updates.
+      for (const hook of targets) await postToDiscord(hook.url, embed);
       const { error: updErr } = await supabase
         .from('inventory')
         .update({ last_notified: item.acquisition_status })

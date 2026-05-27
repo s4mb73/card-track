@@ -99,6 +99,19 @@ create table if not exists public.sites (
   created_at      timestamptz  default now()
 );
 
+-- Discord webhook(s) the notify-discord function posts to. `url` is
+-- locked down the same way as email_accounts.app_password: anon can
+-- write it but the column-level grant blocks anon SELECTs, so the URL
+-- never round-trips to the browser once saved. The function uses the
+-- service-role key and can still read it.
+create table if not exists public.webhooks (
+  id          text         primary key,
+  label       text         not null default '',
+  url         text         not null default '',
+  active      boolean      default true,
+  created_at  timestamptz  default now()
+);
+
 -- ─────────────────────────────────────────────────────────────────────────────
 -- updated_at trigger
 -- ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +146,7 @@ alter table public.inventory        enable row level security;
 alter table public.email_ingestions enable row level security;
 alter table public.email_accounts   enable row level security;
 alter table public.sites            enable row level security;
+alter table public.webhooks         enable row level security;
 
 drop policy if exists "Public read addresses" on public.addresses;
 create policy "Public read addresses"
@@ -200,6 +214,21 @@ create policy "Anon write sites"
   to anon, authenticated
   using (true)
   with check (true);
+
+drop policy if exists "Anon read webhooks"  on public.webhooks;
+drop policy if exists "Anon write webhooks" on public.webhooks;
+create policy "Anon read webhooks"
+  on public.webhooks for select
+  to anon, authenticated
+  using (true);
+create policy "Anon write webhooks"
+  on public.webhooks for all
+  to anon, authenticated
+  using (true)
+  with check (true);
+-- Treat the webhook URL like a credential: anon may INSERT/UPDATE it
+-- via the Settings form but cannot SELECT it back.
+revoke select (url) on public.webhooks from anon, authenticated;
 
 -- ─────────────────────────────────────────────────────────────────────────────
 -- Seed: current CardTrack data
