@@ -78,6 +78,7 @@ const INGEST_STATUS_LABELS = {
 };
 
 let INGESTIONS = [];
+let emailFilter = 'all';  // 'all' | 'inserted' | 'skipped' — filters Recent activity table
 
 const NAV_ICONS = {
   inventory:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5l6-3 6 3v7l-6 3-6-3v-7z"/><path d="M2 4.5l6 3 6-3"/><path d="M8 7.5v7"/></svg>',
@@ -383,61 +384,146 @@ function renderNotifications() {
 
 // ── Email ─────────────────────────────────────────────────────────────────────
 function renderEmail() {
-  const total     = INGESTIONS.length;
-  const inserted  = INGESTIONS.filter(i => i.status === 'inserted').length;
-  const skipped   = INGESTIONS.filter(i => i.status === 'skipped').length;
-  const failed    = INGESTIONS.filter(i => i.status === 'failed').length;
-  const lastRun   = INGESTIONS[0]?.ingested_at
+  const el = document.getElementById('tab-email');
+
+  const lastRun = INGESTIONS[0]?.ingested_at
     ? new Date(INGESTIONS[0].ingested_at).toLocaleString('en-GB')
     : 'never';
 
-  const rows = INGESTIONS.slice(0, 20).map(ing => {
-    const when = ing.ingested_at ? new Date(ing.ingested_at).toLocaleString('en-GB') : '—';
-    const linkedItem = ing.inventory_id ? ITEMS.find(i => i.id === ing.inventory_id) : null;
-    const itemCell = linkedItem
-      ? `<span class="primary">${esc(linkedItem.item)}</span>`
-      : ing.reason
-        ? `<span class="muted">${esc(ing.reason)}</span>`
-        : '<span class="muted">—</span>';
-    const statusPill = ing.status === 'inserted'
-      ? `<span class="pill ok">${esc(INGEST_STATUS_LABELS[ing.status])}</span>`
-      : ing.status === 'failed'
-        ? `<span class="pill warn">${esc(INGEST_STATUS_LABELS[ing.status])}</span>`
-        : `<span class="pill muted">${esc(INGEST_STATUS_LABELS[ing.status] || ing.status)}</span>`;
-    return `
-      <tr>
-        <td><div class="primary">${esc(ing.subject || '(no subject)')}</div><span class="muted">${esc(ing.sender || '')}</span></td>
-        <td>${statusPill}</td>
-        <td>${itemCell}</td>
-        <td class="num"><span class="muted">${esc(when)}</span></td>
-      </tr>
-    `;
-  }).join('');
+  // Inserted-but-no-recipient — the one bit of manual follow-up the scraper
+  // leaves you with. Pair each such ingestion with its inventory row.
+  const needsAttention = INGESTIONS
+    .filter(ing => ing.status === 'inserted' && ing.inventory_id)
+    .map(ing => ({ ing, item: ITEMS.find(i => i.id === ing.inventory_id) }))
+    .filter(({ item }) => item && !item.recipient_address_id);
 
-  document.getElementById('tab-email').innerHTML = `
+  const failures = INGESTIONS.filter(i => i.status === 'failed');
+
+  const activity = INGESTIONS
+    .filter(i => i.status !== 'failed')  // failures are surfaced separately
+    .filter(i => emailFilter === 'all' || i.status === emailFilter)
+    .slice(0, 20);
+
+  const insertedCount = INGESTIONS.filter(i => i.status === 'inserted').length;
+  const skippedCount  = INGESTIONS.filter(i => i.status === 'skipped').length;
+
+  const chip = (key, label, count) => `
+    <button class="chip ${emailFilter === key ? 'active' : ''}" data-filter="${esc(key)}">
+      ${esc(label)}<span class="chip-count">${count}</span>
+    </button>
+  `;
+
+  // 1. Header strip ---------------------------------------------------------
+  const headerHtml = `
     <div class="section">
       <div class="section-head">
-        <div><h2>Ingestion status</h2><div class="sub">Order confirmation emails Claude has parsed into inventory.</div></div>
+        <div>
+          <h2>Email ingestion</h2>
+          <div class="sub">Last run: ${esc(lastRun)}</div>
+        </div>
         <button class="btn-primary btn-add" id="run-ingest">Run now</button>
       </div>
-      <div class="info-row"><span class="k">Last run</span><span>${esc(lastRun)}</span></div>
-      <div class="info-row"><span class="k">Total processed</span><span class="num">${total}</span></div>
-      <div class="info-row"><span class="k">Inserted</span><span class="num">${inserted}</span></div>
-      <div class="info-row"><span class="k">Skipped</span><span class="num">${skipped}</span></div>
-      <div class="info-row"><span class="k">Failed</span><span class="num">${failed}</span></div>
       <div id="run-ingest-status" class="run-status" style="display:none"></div>
     </div>
+  `;
 
+  // 2. Needs attention (only when non-empty) --------------------------------
+  const needsHtml = needsAttention.length ? `
     <div class="section">
-      <div class="section-head"><div><h2>Recent ingestions</h2><div class="sub">Last 20 emails processed.</div></div></div>
-      ${total ? `
-        <table>
-          <thead><tr><th>Email</th><th>Status</th><th>Item / reason</th><th>When</th></tr></thead>
-          <tbody>${rows}</tbody>
-        </table>
-      ` : '<div class="empty">No ingestions yet. Run the <code>CardTrack email ingest</code> workflow once secrets are set.</div>'}
+      <div class="section-head">
+        <div>
+          <h2>Needs attention</h2>
+          <div class="sub">${needsAttention.length} imported item${needsAttention.length === 1 ? '' : 's'} still missing a recipient.</div>
+        </div>
+      </div>
+      <table class="row-clickable">
+        <thead><tr><th>Item</th><th>From email</th><th>Ordered</th></tr></thead>
+        <tbody>
+          ${needsAttention.map(({ ing, item }) => `
+            <tr data-kind="needs" data-id="${esc(item.id)}">
+              <td>
+                <div class="primary">${esc(item.item)}</div>
+                ${item.category ? `<span class="muted">${esc(item.category)}</span>` : ''}
+              </td>
+              <td>
+                <div>${esc(ing.subject || '(no subject)')}</div>
+                <span class="muted">${esc(ing.sender || '')}</span>
+              </td>
+              <td class="num"><span class="muted">${esc(item.date_ordered || '—')}</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
     </div>
+  ` : '';
 
+  // 3. Failed parses (only when non-empty) ----------------------------------
+  const failedHtml = failures.length ? `
+    <div class="section">
+      <div class="section-head">
+        <div>
+          <h2>Failed parses</h2>
+          <div class="sub">${failures.length} email${failures.length === 1 ? '' : 's'} Claude or Supabase couldn't process.</div>
+        </div>
+      </div>
+      <table>
+        <thead><tr><th>Email</th><th>Reason</th><th>When</th></tr></thead>
+        <tbody>
+          ${failures.slice(0, 20).map(f => `
+            <tr>
+              <td><div class="primary">${esc(f.subject || '(no subject)')}</div><span class="muted">${esc(f.sender || '')}</span></td>
+              <td><span class="muted">${esc(f.reason || '—')}</span></td>
+              <td class="num"><span class="muted">${esc(f.ingested_at ? new Date(f.ingested_at).toLocaleString('en-GB') : '—')}</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  ` : '';
+
+  // 4. Recent activity ------------------------------------------------------
+  const activityHtml = `
+    <div class="section">
+      <div class="section-head">
+        <div>
+          <h2>Recent activity</h2>
+          <div class="sub">Last 20 inserted or skipped.</div>
+        </div>
+        <div class="chips">
+          ${chip('all',      'All',      insertedCount + skippedCount)}
+          ${chip('inserted', 'Inserted', insertedCount)}
+          ${chip('skipped',  'Skipped',  skippedCount)}
+        </div>
+      </div>
+      ${activity.length ? `
+        <table>
+          <thead><tr><th>Email</th><th>Status</th><th>Result</th><th>When</th></tr></thead>
+          <tbody>
+            ${activity.map(ing => {
+              const linkedItem = ing.inventory_id ? ITEMS.find(i => i.id === ing.inventory_id) : null;
+              const resultCell = linkedItem
+                ? `<span class="primary">${esc(linkedItem.item)}</span>`
+                : ing.reason
+                  ? `<span class="muted">${esc(ing.reason)}</span>`
+                  : '<span class="muted">—</span>';
+              const pillClass = ing.status === 'inserted' ? 'ok' : 'muted';
+              return `
+                <tr>
+                  <td><div class="primary">${esc(ing.subject || '(no subject)')}</div><span class="muted">${esc(ing.sender || '')}</span></td>
+                  <td><span class="pill ${pillClass}">${esc(INGEST_STATUS_LABELS[ing.status] || ing.status)}</span></td>
+                  <td>${resultCell}</td>
+                  <td class="num"><span class="muted">${esc(ing.ingested_at ? new Date(ing.ingested_at).toLocaleString('en-GB') : '—')}</span></td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      ` : `<div class="empty">${INGESTIONS.length ? 'No ingestions match this filter.' : 'No ingestions yet. Hit Run now once your secrets are set.'}</div>`}
+    </div>
+  `;
+
+  // 5. Footer ---------------------------------------------------------------
+  const footerHtml = `
     <div class="section">
       <div class="section-head"><div><h2>Allowed senders</h2><div class="sub">Mail outside this list is ignored.</div></div></div>
       <div class="section-body">
@@ -450,7 +536,23 @@ function renderEmail() {
     </div>
   `;
 
+  el.innerHTML = headerHtml + needsHtml + failedHtml + activityHtml + footerHtml;
+
   document.getElementById('run-ingest').addEventListener('click', triggerIngest);
+
+  el.querySelectorAll('.chip').forEach(c => {
+    c.addEventListener('click', () => {
+      emailFilter = c.dataset.filter;
+      renderEmail();
+    });
+  });
+
+  el.querySelectorAll('tr[data-kind="needs"]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const item = ITEMS.find(i => i.id === tr.dataset.id);
+      if (item) openInventoryEditor(item);
+    });
+  });
 }
 
 async function triggerIngest() {
