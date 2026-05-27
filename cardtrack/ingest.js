@@ -141,6 +141,17 @@ async function classifyEmailWithClaude({ subject, fromName, text }) {
 
 function newId(prefix) { return `${prefix}_${Math.random().toString(36).slice(2, 10)}`; }
 
+// Sanitise anything we're about to send to Postgres' `date` type. Claude
+// sometimes returns the literal string "<UNKNOWN>" instead of an empty
+// string when it can't extract a date from the body, which PG then
+// rejects mid-insert. Accept only strict YYYY-MM-DD; everything else
+// becomes null.
+function safeDate(value) {
+  if (!value) return null;
+  const s = String(value).trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+
 async function recordIngestion(row) {
   const { error } = await supabase.from('email_ingestions').upsert(row, { onConflict: 'id' });
   if (error) console.error('  ✗ failed to record ingestion:', error.message);
@@ -303,7 +314,7 @@ async function ingest() {
         // Email's Date: header is the authoritative order timestamp —
         // trust it over whatever Claude extracted from the body. Fall back
         // to Claude only if the header is missing/malformed.
-        date_ordered: (parsed.date ? parsed.date.toISOString().slice(0, 10) : cls.date_ordered) || null,
+        date_ordered: safeDate(parsed.date ? parsed.date.toISOString().slice(0, 10) : cls.date_ordered),
         cost: cls.cost || 0,
         carrier: '',
         tracking_ref: '',
