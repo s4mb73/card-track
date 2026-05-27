@@ -496,6 +496,51 @@ table.row-clickable tbody tr { cursor: pointer; }
   margin-bottom: 14px;
 }
 
+.section-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.section-toolbar .spacer { flex: 1; }
+
+.search-input {
+  height: 34px;
+  padding: 0 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 14px;
+  width: 320px;
+  max-width: 50vw;
+}
+.search-input:focus {
+  outline: none;
+  border-color: var(--accent, #6366f1);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.15);
+}
+
+table.addr-table td { vertical-align: middle; }
+table.addr-table .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+table.addr-table th.num { text-align: right; }
+
+.cell-name { display: flex; align-items: center; gap: 10px; }
+.avatar-sm {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  background: var(--accent, #6366f1);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  flex: none;
+}
+
 .btn-add { padding: 7px 13px; font-size: 13px; }
 
 .btn-secondary {

@@ -78,6 +78,7 @@ let SITES          = [];
 let emailFilter    = 'all';     // 'all' | 'inserted' | 'skipped' — filters Recent activity table
 let selectedAccount = '';       // Email tab dropdowns; persisted in localStorage
 let selectedSite    = '';
+let addrSearchQuery = '';       // Addresses tab search input
 
 const NAV_ICONS = {
   inventory:     '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 4.5l6-3 6 3v7l-6 3-6-3v-7z"/><path d="M2 4.5l6 3 6-3"/><path d="M8 7.5v7"/></svg>',
@@ -301,52 +302,79 @@ function renderInventory() {
 function renderAddresses() {
   const el = document.getElementById('tab-addresses');
 
-  const cards = ADDRESSES.map(a => {
+  const rows = ADDRESSES.map(a => {
     const myItems   = ITEMS.filter(i => i.recipient_address_id === a.id);
     const totalCost = myItems.reduce((s, i) => s + (Number(i.cost) || 0), 0);
-    const lines     = addressLines(a);
-    const addrHtml  = lines.length ? lines.map(esc).join('<br>') : '<span class="muted">No address on file</span>';
-    const channel   = (a.preferred_channel || 'sms').toLowerCase();
-
+    const street    = [a.line1, a.line2, a.line3].map(s => String(s || '').trim()).filter(Boolean).join(', ');
+    const where     = [a.town_city, a.postcode].map(s => String(s || '').trim()).filter(Boolean).join(' · ');
+    // haystack drives the search filter — everything lowercased into one string
+    const haystack  = [a.full_name, a.line1, a.line2, a.line3, a.town_city, a.county, a.postcode, a.email]
+      .filter(Boolean).join(' ').toLowerCase();
     return `
-      <div class="person clickable" data-kind="addr" data-id="${esc(a.id)}">
-        <div class="head">
-          <div class="avatar">${esc(initials(a.full_name))}</div>
-          <div class="head-meta">
-            <div class="name">${esc(a.full_name)}</div>
+      <tr data-kind="addr" data-id="${esc(a.id)}" data-haystack="${esc(haystack)}">
+        <td>
+          <div class="cell-name">
+            <span class="avatar-sm">${esc(initials(a.full_name))}</span>
+            <span>${esc(a.full_name)}</span>
           </div>
-        </div>
-        <div class="addr">${addrHtml}</div>
-        <div class="contact">
-          ${a.email ? `<div><b>Email</b>${esc(a.email)}</div>` : ''}
-          <div><b>Phone</b>${esc(a.phone || '—')}</div>
-          <div><b>Prefers</b><span class="channel-tag">${esc(channel.toUpperCase())}</span></div>
-        </div>
-        <div class="meta">
-          <span>${myItems.length} item${myItems.length === 1 ? '' : 's'}</span>
-          <b>${esc(money(totalCost))}</b>
-        </div>
-        ${myItems.length ? `<div class="items">${myItems.map(i => esc(i.item)).join(', ')}</div>` : ''}
-      </div>
+        </td>
+        <td>${street ? esc(street) : '<span class="muted">—</span>'}</td>
+        <td>${where ? esc(where) : '<span class="muted">—</span>'}</td>
+        <td class="num">${myItems.length || '<span class="muted">0</span>'}</td>
+        <td class="num">${totalCost ? esc(money(totalCost)) : '<span class="muted">—</span>'}</td>
+      </tr>
     `;
   }).join('');
 
   el.innerHTML = `
-    <div class="section-head-bare">
+    <div class="section-toolbar">
+      <input type="search" id="addr-search" class="search-input" placeholder="Search name, town, postcode…" autocomplete="off">
+      <span class="muted" id="addr-count">${ADDRESSES.length} address${ADDRESSES.length === 1 ? '' : 'es'}</span>
+      <div class="spacer"></div>
       <button class="btn-primary btn-add" id="add-addr">+ Add address</button>
     </div>
     ${ADDRESSES.length
-      ? `<div class="person-grid">${cards}</div>`
+      ? `<table class="row-clickable addr-table">
+          <thead><tr><th>Name</th><th>Address</th><th>Town · Postcode</th><th class="num">Items</th><th class="num">Spent</th></tr></thead>
+          <tbody id="addr-rows">${rows}</tbody>
+        </table>
+        <div class="empty hidden" id="addr-empty">No addresses match.</div>`
       : '<div class="empty">No addresses yet.</div>'}
   `;
 
   document.getElementById('add-addr').addEventListener('click', () => openAddressEditor());
-  el.querySelectorAll('.person').forEach(p => {
-    p.addEventListener('click', () => {
-      const a = ADDRESSES.find(x => x.id === p.dataset.id);
+  el.querySelectorAll('tr[data-kind="addr"]').forEach(tr => {
+    tr.addEventListener('click', () => {
+      const a = ADDRESSES.find(x => x.id === tr.dataset.id);
       if (a) openAddressEditor(a);
     });
   });
+
+  const search = document.getElementById('addr-search');
+  if (search) {
+    search.value = addrSearchQuery;
+    // Filter in place rather than re-rendering — keeps focus + caret position in the input
+    const applyFilter = () => {
+      addrSearchQuery = search.value;
+      const q = addrSearchQuery.trim().toLowerCase();
+      let shown = 0;
+      el.querySelectorAll('tr[data-kind="addr"]').forEach(tr => {
+        const match = !q || tr.dataset.haystack.includes(q);
+        tr.classList.toggle('hidden', !match);
+        if (match) shown++;
+      });
+      const countEl = document.getElementById('addr-count');
+      const emptyEl = document.getElementById('addr-empty');
+      if (countEl) {
+        countEl.textContent = q
+          ? `${shown} of ${ADDRESSES.length}`
+          : `${ADDRESSES.length} address${ADDRESSES.length === 1 ? '' : 'es'}`;
+      }
+      if (emptyEl) emptyEl.classList.toggle('hidden', shown > 0);
+    };
+    search.addEventListener('input', applyFilter);
+    if (addrSearchQuery) applyFilter();
+  }
 }
 
 // ── Notifications ─────────────────────────────────────────────────────────────
