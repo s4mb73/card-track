@@ -253,10 +253,8 @@ async function ingest() {
     const subject   = parsed.subject || '(no subject)';
     const from      = emailAddressFrom(parsed) || '(unknown)';
 
-    // Dedup against email_ingestions disabled — re-runs are expected to
-    // re-process every message during testing. Re-enable by uncommenting:
-    //   if (await alreadyProcessed(messageId)) continue;
-    if (!matchesSite(parsed, site)) continue;
+    if (await alreadyProcessed(messageId)) continue;
+    if (!matchesSite(parsed, site))        continue;
 
     console.log(`→ ${from} · ${subject}`);
 
@@ -291,11 +289,16 @@ async function ingest() {
     }
 
     if (cls.email_type === 'order_confirmation') {
-      // order_reference dedup against inventory disabled for testing.
-      // Re-enable with:
-      //   const { data: dup } = await supabase.from('inventory')
-      //     .select('id').eq('order_reference', cls.order_reference).maybeSingle();
-      //   if (dup) { skipped++; continue; }
+      // Dedup against existing inventory rows so re-scrapes don't pile up
+      // duplicates of the same order_reference.
+      const { data: dup } = await supabase
+        .from('inventory').select('id').eq('order_reference', cls.order_reference).maybeSingle();
+      if (dup) {
+        skipped++;
+        console.log(`  · order ${cls.order_reference} already in inventory (${dup.id})`);
+        await recordIngestion({ ...baseRow, inventory_id: dup.id, status: 'skipped', reason: `order ${cls.order_reference} already in inventory` });
+        continue;
+      }
 
       const matchedAddressId = findAddress(cls.recipient_name, cls.recipient_postcode);
       if (matchedAddressId) {
@@ -334,61 +337,50 @@ async function ingest() {
       continue;
     }
 
-    // shipment + cancellation both look the order up by reference and
-    // patch the existing inventory row. If we haven't ingested the
-    // confirmation yet (shipment arrived first, or the order was
-    // placed before our 30-day window), skip with a clear reason.
-    const { data: existing } = await supabase
-      .from('inventory')
-      .select('id, item, acquisition_status, carrier, tracking_ref')
-      .eq('order_reference', cls.order_reference)
-      .maybeSingle();
+    // shipment + cancellation patch the existing inventory row(s) by
+    // order_reference. Uses a bulk update so we're resilient even if
+    // somehow multiple rows share a reference — the previous
+    // .maybeSingle() variant would silently error out in that case and
+    // drop the update on the floor.
+    const update = {};
+    if (cls.email_type === 'shipment') {
+      if (cls.carrier)      update.carrier      = cls.carrier;
+      if (cls.tracking_ref) update.tracking_ref = cls.tracking_ref;
+      update.acquisition_status = 'in_transit';
+    } else { // cancellation
+      update.acquisition_status = 'cancelled';
+    }
 
-    if (!existing) {
-      // Don't record this in email_ingestions — if we did, next scrape
-      // would short-circuit at alreadyProcessed() and never retry. The
-      // confirmation might land in a later run (wider window, or the
-      // order was placed outside our 30-day search the first time), and
-      // we want the shipment/cancellation to apply when it does.
+    let q = supabase.from('inventory').update(update).eq('order_reference', cls.order_reference);
+    // For shipments, never downgrade rows already past pre-shipment.
+    // (Legacy 'pending' kept in the list for any pre-rename rows.)
+    if (cls.email_type === 'shipment') {
+      q = q.in('acquisition_status', ['confirmed', 'pending', '']);
+    }
+    const { data: hits, error: updErr } = await q.select('id');
+
+    if (updErr) {
+      console.log(`  ✗ update failed: ${updErr.message}`);
+      failed++;
+      await recordIngestion({ ...baseRow, status: 'failed', reason: `Supabase: ${updErr.message}` });
+      continue;
+    }
+
+    if (!hits?.length) {
+      // No matching row yet — confirmation might land in a later run
+      // (wider window, or older than 30 days the first time). Don't
+      // record in email_ingestions so the next scrape retries.
       skipped++;
       console.log(`  · no matching order ${cls.order_reference} in inventory — will retry next run`);
       continue;
     }
 
-    const update = {};
-    if (cls.email_type === 'shipment') {
-      if (cls.carrier)      update.carrier      = cls.carrier;
-      if (cls.tracking_ref) update.tracking_ref = cls.tracking_ref;
-      // Don't downgrade rows that have already moved past in_transit.
-      // Accept the legacy 'pending' value too so any rows still on the old
-      // status from before the rename still take the shipment update.
-      if (['confirmed', 'pending', '', null].includes(existing.acquisition_status)) {
-        update.acquisition_status = 'in_transit';
-      }
-    } else { // cancellation
-      update.acquisition_status = 'cancelled';
-    }
-
-    if (Object.keys(update).length === 0) {
-      skipped++;
-      console.log(`  · ${cls.email_type} for ${cls.order_reference} carried no new info`);
-      await recordIngestion({ ...baseRow, inventory_id: existing.id, status: 'skipped', reason: `${cls.email_type} carried no new info` });
-      continue;
-    }
-
-    const { error: updErr } = await supabase.from('inventory').update(update).eq('id', existing.id);
-    if (updErr) {
-      console.log(`  ✗ update failed: ${updErr.message}`);
-      failed++;
-      await recordIngestion({ ...baseRow, inventory_id: existing.id, status: 'failed', reason: `Supabase: ${updErr.message}` });
-      continue;
-    }
-    inserted++;
+    inserted += hits.length;
     const summary = cls.email_type === 'shipment'
       ? `tracking=${cls.tracking_ref || '(none)'} carrier=${cls.carrier || '(none)'}`
       : 'cancelled';
-    console.log(`  ✓ ${cls.email_type} → ${existing.id} (${summary})`);
-    await recordIngestion({ ...baseRow, inventory_id: existing.id, status: 'inserted', reason: `${cls.email_type}: ${summary}` });
+    console.log(`  ✓ ${cls.email_type} → ${hits.length} row(s) (${summary})`);
+    await recordIngestion({ ...baseRow, inventory_id: hits[0].id, status: 'inserted', reason: `${cls.email_type}: ${summary} (${hits.length} row${hits.length === 1 ? '' : 's'})` });
   }
 
   await client.logout();
