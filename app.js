@@ -393,22 +393,16 @@ function renderNotifications() {
   const rows = ITEMS.map((item, i) => {
     const st   = states[i];
     const addr = ADDRESS_MAP.get(item.recipient_address_id);
-    const hasPhone = !!(addr && String(addr.phone || '').replace(/\D/g, ''));
     const queuedRow = st.cls === 'warn';
     return `
       <tr>
-        <td>
-          <div class="primary">${esc(addr?.full_name || '—')}</div>
-          ${addr && !hasPhone ? '<span class="muted">No phone on file</span>' : ''}
-        </td>
+        <td><div class="primary">${esc(addr?.full_name || '—')}</div></td>
         <td>${esc(item.item)}</td>
         <td>${statusCell(item.acquisition_status)}</td>
         <td>${item.last_notified ? esc(statusLabel(item.last_notified)) : '<span class="muted">Never</span>'}</td>
         <td><span class="pill ${st.cls}">${esc(st.label)}</span></td>
         <td class="num">
-          ${queuedRow && hasPhone
-            ? `<button class="btn-secondary btn-sm" data-send-one="${esc(item.id)}">Send</button>`
-            : ''}
+          ${queuedRow ? `<button class="btn-secondary btn-sm" data-send-one="${esc(item.id)}">Post</button>` : ''}
         </td>
       </tr>
     `;
@@ -419,10 +413,10 @@ function renderNotifications() {
       <div class="section-head">
         <div>
           <h2>Notification history</h2>
-          <div class="sub">${sent} sent &middot; ${queued} queued &middot; sending as <code>CardTrack</code> via SMS</div>
+          <div class="sub">${sent} sent &middot; ${queued} queued &middot; posting to Discord webhook</div>
         </div>
         <button class="btn-primary btn-add" id="send-queued" ${queuedIds.length ? '' : 'disabled'}>
-          Send queued${queuedIds.length ? ` (${queuedIds.length})` : ''}
+          Post queued${queuedIds.length ? ` (${queuedIds.length})` : ''}
         </button>
       </div>
       <div id="send-status" class="run-status" style="display:none"></div>
@@ -448,22 +442,22 @@ async function sendNotifications(inventoryIds) {
   const status = document.getElementById('send-status');
   status.style.display = 'block';
   status.className = 'run-status muted';
-  status.textContent = `Sending ${inventoryIds.length} message${inventoryIds.length === 1 ? '' : 's'}…`;
+  status.textContent = `Posting ${inventoryIds.length} update${inventoryIds.length === 1 ? '' : 's'} to Discord…`;
   try {
-    const { data, error } = await supabase.functions.invoke('send-sms', {
+    const { data, error } = await supabase.functions.invoke('notify-discord', {
       method: 'POST',
       body:   { inventory_ids: inventoryIds },
     });
     if (error) throw new Error(data?.error || error.message);
-    const sent = data?.sent ?? 0;
+    const sent   = data?.sent   ?? 0;
     const failed = data?.failed ?? 0;
     status.className = failed ? 'run-status warn' : 'run-status ok';
     status.textContent = failed
-      ? `Sent ${sent}, ${failed} failed. ${(data.results || []).filter(r => !r.ok).map(r => r.error).join(' · ')}`
-      : `Sent ${sent} message${sent === 1 ? '' : 's'}.`;
+      ? `Posted ${sent}, ${failed} failed. ${(data.results || []).filter(r => !r.ok).map(r => r.error).join(' · ')}`
+      : `Posted ${sent} update${sent === 1 ? '' : 's'} to Discord.`;
   } catch (err) {
     status.className = 'run-status warn';
-    status.textContent = `Send failed: ${err.message}`;
+    status.textContent = `Post failed: ${err.message}`;
   }
 }
 
