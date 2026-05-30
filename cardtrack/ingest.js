@@ -13,6 +13,7 @@ import { simpleParser } from 'mailparser';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
 import { parseShopifyEmail } from './parseShopifyEmail.js';
+import { notifyDiscord, autoNotifyEnabled } from './discord.js';
 
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY } = process.env;
 
@@ -299,6 +300,7 @@ async function ingest() {
   await patchRun({ total: uids.length });
 
   let inserted = 0, skipped = 0, failed = 0, processed = 0;
+  const notifyIds = []; // shipment/cancellation rows to ping Discord about
 
   // Phase 1 — download + locally filter. Sequential because ImapFlow's
   // streaming fetch is fastest in-order, and the filter work is cheap.
@@ -476,11 +478,22 @@ async function ingest() {
     }
 
     inserted += hits.length;
+    notifyIds.push(...hits.map(h => h.id)); // → in_transit / cancelled; notify after the loop
     const summary = cls.email_type === 'shipment'
       ? `tracking=${cls.tracking_ref || '(none)'} carrier=${cls.carrier || '(none)'}`
       : 'cancelled';
     console.log(`  ✓ ${cls.email_type} → ${hits.length} row(s) (${summary})`);
     await recordIngestion({ ...baseRow, inventory_id: hits[0].id, status: 'inserted', reason: `${cls.email_type}: ${summary} (${hits.length} row${hits.length === 1 ? '' : 's'})` });
+  }
+
+  if (autoNotifyEnabled && notifyIds.length) {
+    console.log(`Notifying Discord for ${notifyIds.length} shipment/cancellation update(s)…`);
+    try {
+      const summary = await notifyDiscord(notifyIds);
+      if (summary) console.log(`Discord: ${summary}`);
+    } catch (err) {
+      console.error(`Discord notify failed: ${err.message}`);
+    }
   }
 
   console.log(`\nDone. inserted=${inserted} skipped=${skipped} failed=${failed}`);

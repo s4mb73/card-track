@@ -15,6 +15,7 @@ import { createClient } from '@supabase/supabase-js';
 import 'dotenv/config';
 
 import { checkTracking, STATUS } from './carriers.js';
+import { notifyDiscord, autoNotifyEnabled } from './discord.js';
 
 const SUPABASE_URL              = process.env.SUPABASE_URL;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
@@ -27,6 +28,8 @@ if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
   auth: { persistSession: false },
 });
+
+// Discord auto-notify is provided by ./discord.js (shared with ingest.js).
 
 const ACTIVE_STATUSES = ['confirmed', 'in_transit', 'out_for_delivery'];
 
@@ -74,6 +77,7 @@ async function main() {
   }
 
   let changed = 0, errors = 0;
+  const changedIds = []; // rows whose status actually moved this run
 
   for (const item of due) {
     if (!item.tracking_ref) {
@@ -123,7 +127,21 @@ async function main() {
     if (upErr) {
       log(`  ERROR DB update failed for ${item.item}: ${upErr.message}`, 'ERROR');
       errors++;
+    } else {
+      changedIds.push(item.id);
     }
+  }
+
+  if (autoNotifyEnabled && changedIds.length) {
+    log(`Notifying Discord for ${changedIds.length} status change(s)…`);
+    try {
+      const summary = await notifyDiscord(changedIds);
+      if (summary) log(`Discord: ${summary}`);
+    } catch (err) {
+      log(`Discord notify failed: ${err.message}`, 'WARN');
+    }
+  } else if (changedIds.length) {
+    log(`Auto-notify disabled — skipping Discord for ${changedIds.length} change(s)`);
   }
 
   log(`Done — ${due.length} checked, ${changed} changed, ${errors} errors`);
