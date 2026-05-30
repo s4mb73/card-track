@@ -12,6 +12,7 @@ import { ImapFlow } from 'imapflow';
 import { simpleParser } from 'mailparser';
 import { createClient } from '@supabase/supabase-js';
 import Anthropic from '@anthropic-ai/sdk';
+import { parseShopifyEmail } from './parseShopifyEmail.js';
 
 const { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, ANTHROPIC_API_KEY } = process.env;
 
@@ -146,6 +147,32 @@ async function classifyEmailWithClaude({ subject, fromName, text }) {
   const toolUse = resp.content.find(b => b.type === 'tool_use');
   if (!toolUse) throw new Error('Claude did not return a tool_use block');
   return toolUse.input;
+}
+
+// Map a deterministic parseShopifyEmail() result onto the same shape the
+// Claude classifier returns, so the dispatch logic downstream doesn't care
+// which produced it. `date_ordered` is left empty on purpose — the email's
+// Date header wins over any body-extracted date (see the insert below).
+function inferCategory(item) {
+  const s = String(item || '').toLowerCase();
+  if (/pok[eé]mon/.test(s)) return 'Pokémon';
+  if (/topps/.test(s))      return 'Topps';
+  return '';
+}
+function parserResultToCls(p) {
+  return {
+    email_type:         p.emailType,
+    order_reference:    p.orderReference,
+    item:               p.item || '',
+    category:           inferCategory(p.item),
+    cost:               p.cost || 0,
+    quantity:           p.quantity || (p.emailType === 'order_confirmation' ? 1 : 0),
+    date_ordered:       '',
+    recipient_name:     p.recipient?.name || '',
+    recipient_postcode: p.recipient?.postcode || '',
+    carrier:            p.carrier || '',
+    tracking_ref:       p.trackingRef || '',
+  };
 }
 
 function newId(prefix) { return `${prefix}_${Math.random().toString(36).slice(2, 10)}`; }
@@ -292,29 +319,37 @@ async function ingest() {
     });
   }
   await client.logout();
-  console.log(`${items.length} of ${uids.length} matched the local filter; classifying with concurrency=${CLAUDE_CONCURRENCY}…`);
+  console.log(`${items.length} of ${uids.length} matched the local filter; classifying (deterministic parser first, Claude fallback @ concurrency=${CLAUDE_CONCURRENCY})…`);
 
-  // Phase 2 — classify in parallel. Anthropic's Haiku tier handles
-  // a few concurrent requests cleanly; we tick the progress bar from
-  // inside the worker pool as each result lands so the dashboard sees
-  // live throughput.
-  const classified = await Promise.all(items.map(item => claudeLimit(async () => {
+  // Phase 2 — classify. The deterministic parseShopifyEmail() runs first and
+  // costs zero tokens; Claude is only invoked for emails the parser can't
+  // fully handle (unknown sender, template change, or a missing required
+  // field → `needsAI`). The progress bar ticks as each result lands.
+  const classified = await Promise.all(items.map(item => (async () => {
+    const subject  = item.parsed.subject || '';
+    const fromName = item.parsed.from?.value?.[0]?.name || item.baseRow.sender;
+    const text     = item.parsed.text || item.parsed.html || '';
     try {
-      const cls = await classifyEmailWithClaude({
-        subject:  item.parsed.subject || '',
-        fromName: item.parsed.from?.value?.[0]?.name || item.baseRow.sender,
-        text:     item.parsed.text || item.parsed.html || '',
-      });
-      return { item, cls, err: null };
+      const parsed = parseShopifyEmail({ subject, text });
+      if (!parsed.needsAI) {
+        return { item, cls: parserResultToCls(parsed), source: 'parser', err: null };
+      }
+      // Fall back to Claude only here; this is the only path that spends tokens.
+      const cls = await claudeLimit(() => classifyEmailWithClaude({ subject, fromName, text }));
+      return { item, cls, source: 'claude', err: null };
     } catch (err) {
-      return { item, cls: null, err };
+      return { item, cls: null, source: null, err };
     } finally {
       processed++;
       if (processed === items.length || processed % Math.max(1, Math.ceil(items.length / 100)) === 0) {
         patchRun({ processed, inserted, skipped, failed }).catch(() => { /* fire-and-forget */ });
       }
     }
-  })));
+  })()));
+
+  const viaParser = classified.filter(r => r.source === 'parser').length;
+  const viaClaude = classified.filter(r => r.source === 'claude').length;
+  console.log(`Classified ${classified.length}: ${viaParser} by parser (0 tokens), ${viaClaude} by Claude fallback.`);
 
   // Phase 3 — apply serially. Order_confirmations first so any
   // shipment/cancellation in the same batch finds its target row,
@@ -325,7 +360,7 @@ async function ingest() {
   );
 
   for (const result of classified) {
-    const { item, cls, err } = result;
+    const { item, cls, err, source } = result;
     const { parsed, baseRow } = item;
     const subject = baseRow.subject;
     const from    = baseRow.sender;
@@ -333,11 +368,11 @@ async function ingest() {
     if (err) {
       console.log(`  ✗ classify failed for ${subject}: ${err.message}`);
       failed++;
-      await recordIngestion({ ...baseRow, status: 'failed', reason: `Claude: ${err.message}` });
+      await recordIngestion({ ...baseRow, status: 'failed', reason: `Classify: ${err.message}` });
       continue;
     }
 
-    console.log(`→ ${from} · ${subject}`);
+    console.log(`→ ${from} · ${subject} (via ${source})`);
 
     if (cls.email_type === 'other') {
       skipped++;
