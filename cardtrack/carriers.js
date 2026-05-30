@@ -93,6 +93,20 @@ async function getHTML(url) {
   return res.text();
 }
 
+// A scraped status is only trustworthy if the fetched page actually shows the
+// tracking ref. SPA shells, redirects and error pages don't contain it, and
+// matching status keywords on those produces false positives — e.g. Royal
+// Mail's generic /track-your-item shell (served because the #fragment route
+// never reaches the server) contains the word "delivered" inside a help link
+// ("My item is shown as delivered but it hasn't been"), which previously
+// marked every Royal Mail item as delivered. When the ref is absent, callers
+// must treat the page as having no usable status (UNKNOWN).
+function pageShowsRef(html, ref) {
+  const h = String(html).toLowerCase();
+  const r = String(ref).toLowerCase();
+  return h.includes(r) || h.replace(/[\s-]/g, '').includes(r.replace(/[\s-]/g, ''));
+}
+
 // ── Royal Mail ────────────────────────────────────────────────────────────────
 // Uses their unofficial summary API used by the tracking page.
 
@@ -141,6 +155,10 @@ async function checkRoyalMailHTML(ref) {
   const html  = await getHTML(
     `https://www.royalmail.com/track-your-item#/tracking-results/${ref}`
   );
+  if (!pageShowsRef(html, ref)) {
+    logMethod('royal_mail', ref, 'HTML', 'unknown (no live tracking on page)');
+    return STATUS.UNKNOWN;
+  }
   const lower = html.toLowerCase();
 
   let status = STATUS.UNKNOWN;
@@ -189,6 +207,10 @@ async function checkEvri(ref) {
 
 async function checkEvriHTML(ref) {
   const html  = await getHTML(`https://www.evri.com/track/${ref}`);
+  if (!pageShowsRef(html, ref)) {
+    logMethod('evri', ref, 'HTML', 'unknown (no live tracking on page)');
+    return STATUS.UNKNOWN;
+  }
   const lower = html.toLowerCase();
 
   let status = STATUS.UNKNOWN;
@@ -207,6 +229,10 @@ async function checkDPD(ref) {
     const html  = await getHTML(
       `https://track.dpd.co.uk/tracking/parcel/${encodeURIComponent(ref)}`
     );
+    if (!pageShowsRef(html, ref)) {
+      logMethod('dpd', ref, 'HTML', 'unknown (no live tracking on page)');
+      return STATUS.UNKNOWN;
+    }
     const lower = html.toLowerCase();
 
     let status = STATUS.UNKNOWN;
@@ -228,6 +254,10 @@ async function checkDPD(ref) {
 async function checkYodel(ref) {
   try {
     const html  = await getHTML(`https://www.yodel.co.uk/tracking/${ref}`);
+    if (!pageShowsRef(html, ref)) {
+      logMethod('yodel', ref, 'HTML', 'unknown (no live tracking on page)');
+      return STATUS.UNKNOWN;
+    }
     const lower = html.toLowerCase();
 
     let status = STATUS.UNKNOWN;
@@ -248,6 +278,10 @@ async function checkParcelForce(ref) {
     const html  = await getHTML(
       `https://www.parcelforce.com/track-trace?trackNumber=${encodeURIComponent(ref)}`
     );
+    if (!pageShowsRef(html, ref)) {
+      logMethod('parcelforce', ref, 'HTML', 'unknown (no live tracking on page)');
+      return STATUS.UNKNOWN;
+    }
     const lower = html.toLowerCase();
 
     let status = STATUS.UNKNOWN;
