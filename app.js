@@ -106,6 +106,7 @@ let ADDRESS_MAP = new Map();
 let inventoryFilter = 'all';
 let inventorySort   = 'newest';
 let inventoryView   = localStorage.getItem('inv_view') || 'flat'; // 'flat' | 'grouped'
+let inventorySearch = '';
 let SELECTED_INV    = new Set();
 let COLLAPSED_GROUPS = new Set(JSON.parse(localStorage.getItem('inv_collapsed') || '[]'));
 
@@ -274,9 +275,19 @@ function renderInventory() {
   // cancelled (gone) and picked_up (already in your hands). What's
   // left needs your attention.
   const isTerminal = (s) => s === 'cancelled' || s === 'picked_up';
-  const filtered = inventoryFilter === 'all'
+  const q = inventorySearch.trim().toLowerCase();
+  const matchesSearch = (i) => {
+    if (!q) return true;
+    const a = ADDRESS_MAP.get(i.recipient_address_id);
+    return [
+      i.item, i.order_reference, i.category, i.carrier, i.tracking_ref,
+      a?.full_name, a?.postcode, a?.town_city,
+    ].some(v => String(v || '').toLowerCase().includes(q));
+  };
+  const filtered = (inventoryFilter === 'all'
     ? ITEMS.filter(i => !isTerminal(i.acquisition_status))
-    : ITEMS.filter(i => i.acquisition_status === inventoryFilter);
+    : ITEMS.filter(i => i.acquisition_status === inventoryFilter)
+  ).filter(matchesSearch);
   const cancelledHidden = inventoryFilter === 'all'
     ? ITEMS.filter(i => isTerminal(i.acquisition_status)).length
     : 0;
@@ -316,6 +327,17 @@ function renderInventory() {
       ? `<button class="btn-secondary btn-sm" data-mark-pickup="${esc(item.id)}" data-stop title="Mark as picked up">Pick ✓</button>`
       : '';
 
+    // Days-since-delivered badge — turns amber after 3 days, red after 7.
+    // Nudges you toward planning a pickup before the cards sit too long.
+    let ageBadge = '';
+    if (item.acquisition_status === 'delivered' && item.date_received) {
+      const days = Math.floor((Date.now() - new Date(item.date_received).getTime()) / 86400000);
+      if (days >= 0) {
+        const cls = days >= 7 ? 'urgent' : days >= 3 ? 'warn' : 'fresh';
+        ageBadge = ` <span class="age-badge ${cls}" title="Delivered ${days} day${days === 1 ? '' : 's'} ago">${days}d</span>`;
+      }
+    }
+
     return `
       <tr data-kind="inv" data-id="${esc(item.id)}" class="${checked ? 'is-selected' : ''}">
         <td class="select-cell" data-stop>
@@ -330,7 +352,7 @@ function renderInventory() {
           ${destLoc ? `<span class="muted">${esc(destLoc)}</span>` : ''}
         </td>
         <td>${esc(carrierLabel(item.carrier))}</td>
-        <td>${statusCell(item.acquisition_status)}</td>
+        <td>${statusCell(item.acquisition_status)}${ageBadge}</td>
         <td>${trackHtml}</td>
         <td class="num">${esc(money(item.cost))}</td>
         <td class="action-cell" data-stop>${actionBtn}</td>
@@ -407,12 +429,14 @@ function renderInventory() {
         <div class="toolbar">
           ${selectedDelivered ? `<button class="btn-primary btn-add" id="bulk-pickup-inv">Mark ${selectedDelivered} picked up</button>` : ''}
           ${SELECTED_INV.size ? `<button class="btn-danger btn-add" id="bulk-delete-inv">Delete ${SELECTED_INV.size} item${SELECTED_INV.size === 1 ? '' : 's'}</button>` : ''}
+          <input type="search" id="inv-search" class="search-input" placeholder="Search item, ref, recipient…" value="${esc(inventorySearch)}" aria-label="Search inventory">
           <div class="seg-control" role="tablist" aria-label="Inventory view">
             <button type="button" data-view="flat"    class="${inventoryView === 'flat' ? 'active' : ''}">List</button>
             <button type="button" data-view="grouped" class="${inventoryView === 'grouped' ? 'active' : ''}">By recipient</button>
           </div>
           <select id="status-filter" aria-label="Filter by status">${options}</select>
           <select id="inv-sort" aria-label="Sort by">${sortOpts}</select>
+          <button class="btn-secondary btn-add" id="check-tracking" title="Poll carriers now (otherwise runs every 15 min)">Check tracking</button>
           <button class="btn-primary btn-add" id="add-inv">+ Add item</button>
         </div>
       </div>
@@ -466,6 +490,25 @@ function renderInventory() {
   const bulkPickupBtn = document.getElementById('bulk-pickup-inv');
   if (bulkPickupBtn) bulkPickupBtn.addEventListener('click', bulkMarkPickedUp);
 
+  const searchInput = document.getElementById('inv-search');
+  if (searchInput) {
+    // Persist focus + caret across re-renders so typing stays smooth.
+    if (document.activeElement === searchInput) {
+      const pos = searchInput.selectionStart;
+      requestAnimationFrame(() => {
+        const el2 = document.getElementById('inv-search');
+        if (el2) { el2.focus(); el2.setSelectionRange(pos, pos); }
+      });
+    }
+    searchInput.addEventListener('input', e => {
+      inventorySearch = e.target.value;
+      renderInventory();
+    });
+  }
+
+  const checkBtn = document.getElementById('check-tracking');
+  if (checkBtn) checkBtn.addEventListener('click', triggerCarrierCheck);
+
   // View toggle (List ↔ By recipient). Persists choice in localStorage.
   el.querySelectorAll('.seg-control button[data-view]').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -517,6 +560,27 @@ async function bulkMarkPickedUp() {
   });
   if (!ids.length) return;
   await markPickedUp(ids);
+}
+
+async function triggerCarrierCheck() {
+  const btn = document.getElementById('check-tracking');
+  if (!btn) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Polling carriers…';
+  try {
+    const { data, error } = await supabase.functions.invoke('trigger-check', { method: 'POST' });
+    if (error) throw new Error(data?.error || error.message);
+    btn.textContent = 'Started ✓';
+  } catch (err) {
+    btn.textContent = 'Failed';
+    alert(`Check tracking failed: ${err.message}`);
+  } finally {
+    setTimeout(() => {
+      const b = document.getElementById('check-tracking');
+      if (b) { b.disabled = false; b.textContent = original; }
+    }, 3000);
+  }
 }
 
 async function bulkDeleteInventory() {

@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        function: [trigger-ingest, notify-discord]
+        function: [trigger-ingest, trigger-check, notify-discord]
     steps:
       - uses: actions/checkout@v4
 
