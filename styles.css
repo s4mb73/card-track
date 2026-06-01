@@ -637,19 +637,18 @@ tr.group-row strong { font-weight: 600; color: var(--text); }
 .age-badge.warn   { background: rgba(245, 158, 11, 0.13); color: #b45309; }
 .age-badge.urgent { background: rgba(239,  68, 68, 0.13); color: #b91c1c; }
 
-/* Status-coloured left edge on inventory rows so the table reads at a
-   glance — same colours as the status pills, just translated into a
-   2px accent stripe on the leading cell. */
-.inv-table tbody tr[data-status="confirmed"]        > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-slate); }
-.inv-table tbody tr[data-status="in_transit"]       > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-blue);  background: rgba(59, 130, 246, 0.025); }
-.inv-table tbody tr[data-status="out_for_delivery"] > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-amber); background: rgba(245, 158, 11, 0.04); }
-.inv-table tbody tr[data-status="delivered"]        > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-green); background: rgba(16, 185, 129, 0.04); }
-.inv-table tbody tr[data-status="picked_up"]        > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-purple); }
-.inv-table tbody tr[data-status="failed"]           > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-red);   background: rgba(239,  68,  68, 0.04); }
-.inv-table tbody tr[data-status="cancelled"]        > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-slate); }
+/* Very faint status-coloured row tint so the table reads at a glance.
+   Confirmed and cancelled stay neutral — nothing actionable, no need
+   to draw the eye. The actionable statuses (in transit → delivered)
+   get progressively stronger tints that mirror the status pill colour. */
+.inv-table tbody tr[data-status="in_transit"]       > td { background-color: rgba(59, 130, 246, 0.04); }
+.inv-table tbody tr[data-status="out_for_delivery"] > td { background-color: rgba(245, 158, 11, 0.07); }
+.inv-table tbody tr[data-status="delivered"]        > td { background-color: rgba(16, 185, 129, 0.06); }
+.inv-table tbody tr[data-status="failed"]           > td { background-color: rgba(239,  68,  68, 0.05); }
 
-/* Subtle hover lift on inventory rows now that they carry colour cues. */
-.inv-table tbody tr:not(.group-row):hover > td { background-color: rgba(91, 84, 230, 0.025); }
+/* Hover lift sits above the per-status tint so the cursor still gets
+   feedback on every row, even tinted ones. */
+.inv-table tbody tr:not(.group-row):hover > td { background-color: rgba(91, 84, 230, 0.045); }
 tr.is-selected { background: rgba(99, 102, 241, 0.07); }
 
 .ingest-progress { margin-top: 12px; }
