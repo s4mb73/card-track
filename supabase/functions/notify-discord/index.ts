@@ -29,6 +29,7 @@ const STATUS_COLOR: Record<string, number> = {
   in_transit:       0x3b82f6, // blue
   out_for_delivery: 0xf59e0b, // amber
   delivered:        0x10b981, // green
+  picked_up:        0x8b5cf6, // purple
   failed:           0xef4444, // red
   cancelled:        0x6b7280, // slate
 };
@@ -36,6 +37,7 @@ const STATUS_LABEL: Record<string, string> = {
   in_transit:       'In transit',
   out_for_delivery: 'Out for delivery',
   delivered:        'Delivered',
+  picked_up:        'Picked up',
   failed:           'Delivery failed',
   cancelled:        'Cancelled',
 };

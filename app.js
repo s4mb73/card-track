@@ -16,6 +16,7 @@ const STATUS_LABELS = {
   in_transit:       'In transit',
   out_for_delivery: 'Out for delivery',
   delivered:        'Delivered',
+  picked_up:        'Picked up',
   failed:           'Delivery failed',
   cancelled:        'Cancelled',
   unknown:          'Unknown',
@@ -62,7 +63,7 @@ function parseTrackingInput(input) {
   return { carrier: '', ref: '' };
 }
 
-const ACQ_STATUSES  = ['confirmed', 'in_transit', 'out_for_delivery', 'delivered', 'failed', 'cancelled'];
+const ACQ_STATUSES  = ['confirmed', 'in_transit', 'out_for_delivery', 'delivered', 'picked_up', 'failed', 'cancelled'];
 const CATEGORIES    = ['Topps', 'Pokémon'];
 const QUANTITIES    = [1, 2, 3, 4];
 const NOTIFY_TRIGGERS = ['in_transit', 'out_for_delivery', 'delivered', 'failed', 'cancelled'];
@@ -267,11 +268,15 @@ function renderInventory() {
 
   // Default ("all") hides cancelled orders so refunded items don't clutter the
   // list — pick "Cancelled" from the filter to see them.
+  // "active" view hides anything terminal from your perspective —
+  // cancelled (gone) and picked_up (already in your hands). What's
+  // left needs your attention.
+  const isTerminal = (s) => s === 'cancelled' || s === 'picked_up';
   const filtered = inventoryFilter === 'all'
-    ? ITEMS.filter(i => i.acquisition_status !== 'cancelled')
+    ? ITEMS.filter(i => !isTerminal(i.acquisition_status))
     : ITEMS.filter(i => i.acquisition_status === inventoryFilter);
   const cancelledHidden = inventoryFilter === 'all'
-    ? ITEMS.filter(i => i.acquisition_status === 'cancelled').length
+    ? ITEMS.filter(i => isTerminal(i.acquisition_status)).length
     : 0;
 
   filtered.sort((a, b) => compareInventory(a, b, inventorySort));
@@ -279,7 +284,7 @@ function renderInventory() {
   const FILTER_KEYS = ['all', ...ACQ_STATUSES];
   const options = FILTER_KEYS.map(k => `
     <option value="${esc(k)}" ${k === inventoryFilter ? 'selected' : ''}>
-      ${k === 'all' ? 'All (excl. cancelled)' : esc(statusLabel(k))}
+      ${k === 'all' ? 'Active (excl. cancelled + picked up)' : esc(statusLabel(k))}
     </option>
   `).join('');
   const sortOpts = SORT_OPTIONS.map(([v, l]) =>
