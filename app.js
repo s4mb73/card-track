@@ -105,7 +105,9 @@ let ADDRESSES = [];
 let ADDRESS_MAP = new Map();
 let inventoryFilter = 'all';
 let inventorySort   = 'newest';
+let inventoryView   = localStorage.getItem('inv_view') || 'flat'; // 'flat' | 'grouped'
 let SELECTED_INV    = new Set();
+let COLLAPSED_GROUPS = new Set(JSON.parse(localStorage.getItem('inv_collapsed') || '[]'));
 
 // ── Generic helpers ───────────────────────────────────────────────────────────
 function esc(value) {
@@ -296,7 +298,7 @@ function renderInventory() {
   for (const id of SELECTED_INV) if (!visibleIds.has(id)) SELECTED_INV.delete(id);
   const allChecked = filtered.length > 0 && filtered.every(i => SELECTED_INV.has(i.id));
 
-  const rows = filtered.map(item => {
+  const renderItemRow = (item) => {
     const ref = item.tracking_ref || '';
     const url = safeUrl(trackingUrl(item.carrier, ref));
     const trackHtml = ref
@@ -310,6 +312,9 @@ function renderInventory() {
     const subParts = [item.category, item.order_reference].map(s => String(s || '').trim()).filter(Boolean);
     const subLine  = subParts.join(' · ');
     const checked  = SELECTED_INV.has(item.id);
+    const actionBtn = item.acquisition_status === 'delivered'
+      ? `<button class="btn-secondary btn-sm" data-mark-pickup="${esc(item.id)}" data-stop title="Mark as picked up">Pick ✓</button>`
+      : '';
 
     return `
       <tr data-kind="inv" data-id="${esc(item.id)}" class="${checked ? 'is-selected' : ''}">
@@ -328,9 +333,59 @@ function renderInventory() {
         <td>${statusCell(item.acquisition_status)}</td>
         <td>${trackHtml}</td>
         <td class="num">${esc(money(item.cost))}</td>
+        <td class="action-cell" data-stop>${actionBtn}</td>
       </tr>
     `;
-  }).join('');
+  };
+
+  // Build the table body. Grouped view nests rows under a clickable
+  // recipient header; the header row spans all columns.
+  let rowsHtml;
+  if (inventoryView === 'grouped') {
+    const groups = new Map();
+    for (const it of filtered) {
+      const k = it.recipient_address_id || '__unassigned__';
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(it);
+    }
+    const sortedGroups = [...groups.entries()].sort(([a], [b]) => {
+      const na = ADDRESS_MAP.get(a)?.full_name || 'zzz Unassigned';
+      const nb = ADDRESS_MAP.get(b)?.full_name || 'zzz Unassigned';
+      return na.localeCompare(nb);
+    });
+    rowsHtml = sortedGroups.map(([addrId, items]) => {
+      const addr = ADDRESS_MAP.get(addrId);
+      const name = addr?.full_name || 'Unassigned';
+      const pc   = addr?.postcode || '';
+      const total = items.reduce((s, i) => s + (Number(i.cost) || 0), 0);
+      const counts = items.reduce((acc, i) => {
+        acc[i.acquisition_status] = (acc[i.acquisition_status] || 0) + 1;
+        return acc;
+      }, {});
+      const countSummary = Object.entries(counts)
+        .map(([s, n]) => `${n} ${statusLabel(s).toLowerCase()}`)
+        .join(' · ');
+      const collapsed = COLLAPSED_GROUPS.has(addrId);
+      const header = `
+        <tr class="group-row" data-group-id="${esc(addrId)}">
+          <td colspan="8">
+            <span class="group-caret">${collapsed ? '▸' : '▾'}</span>
+            <strong>${esc(name)}</strong>
+            ${pc ? `<span class="muted mono"> · ${esc(pc)}</span>` : ''}
+            <span class="muted"> · ${items.length} item${items.length === 1 ? '' : 's'} · ${esc(countSummary)} · ${esc(money(total))}</span>
+          </td>
+        </tr>
+      `;
+      const body = collapsed ? '' : items.map(renderItemRow).join('');
+      return header + body;
+    }).join('');
+  } else {
+    rowsHtml = filtered.map(renderItemRow).join('');
+  }
+  const rows = rowsHtml;
+
+  const selectedDelivered = filtered.filter(i =>
+    SELECTED_INV.has(i.id) && i.acquisition_status === 'delivered').length;
 
   const w = weekSummary();
   const wkHtml = `
@@ -350,19 +405,24 @@ function renderInventory() {
           <div class="sub">${filtered.length} item${filtered.length === 1 ? '' : 's'}${cancelledHidden ? ` · ${cancelledHidden} cancelled hidden` : ''}</div>
         </div>
         <div class="toolbar">
+          ${selectedDelivered ? `<button class="btn-primary btn-add" id="bulk-pickup-inv">Mark ${selectedDelivered} picked up</button>` : ''}
           ${SELECTED_INV.size ? `<button class="btn-danger btn-add" id="bulk-delete-inv">Delete ${SELECTED_INV.size} item${SELECTED_INV.size === 1 ? '' : 's'}</button>` : ''}
+          <div class="seg-control" role="tablist" aria-label="Inventory view">
+            <button type="button" data-view="flat"    class="${inventoryView === 'flat' ? 'active' : ''}">List</button>
+            <button type="button" data-view="grouped" class="${inventoryView === 'grouped' ? 'active' : ''}">By recipient</button>
+          </div>
           <select id="status-filter" aria-label="Filter by status">${options}</select>
           <select id="inv-sort" aria-label="Sort by">${sortOpts}</select>
           <button class="btn-primary btn-add" id="add-inv">+ Add item</button>
         </div>
       </div>
       ${filtered.length ? `
-        <table class="row-clickable">
+        <table class="row-clickable inv-table">
           <thead>
             <tr>
               <th class="select-cell"><input type="checkbox" id="select-all-inv" ${allChecked ? 'checked' : ''}></th>
               <th>Item</th><th>Sent to</th><th>Carrier</th>
-              <th>Status</th><th>Tracking</th><th>Cost</th>
+              <th>Status</th><th>Tracking</th><th>Cost</th><th></th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
@@ -403,13 +463,60 @@ function renderInventory() {
   const bulkBtn = document.getElementById('bulk-delete-inv');
   if (bulkBtn) bulkBtn.addEventListener('click', bulkDeleteInventory);
 
-  el.querySelectorAll('tbody tr').forEach(tr => {
+  const bulkPickupBtn = document.getElementById('bulk-pickup-inv');
+  if (bulkPickupBtn) bulkPickupBtn.addEventListener('click', bulkMarkPickedUp);
+
+  // View toggle (List ↔ By recipient). Persists choice in localStorage.
+  el.querySelectorAll('.seg-control button[data-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      inventoryView = btn.dataset.view;
+      localStorage.setItem('inv_view', inventoryView);
+      renderInventory();
+    });
+  });
+
+  // Click a group header (anywhere outside a child input) to collapse / expand.
+  el.querySelectorAll('tr.group-row').forEach(tr => {
+    tr.addEventListener('click', e => {
+      if (e.target.closest('[data-stop]')) return;
+      const id = tr.dataset.groupId;
+      if (COLLAPSED_GROUPS.has(id)) COLLAPSED_GROUPS.delete(id);
+      else COLLAPSED_GROUPS.add(id);
+      localStorage.setItem('inv_collapsed', JSON.stringify([...COLLAPSED_GROUPS]));
+      renderInventory();
+    });
+  });
+
+  // Per-row "Pick ✓" button on delivered rows.
+  el.querySelectorAll('[data-mark-pickup]').forEach(btn => {
+    btn.addEventListener('click', () => markPickedUp([btn.dataset.markPickup]));
+  });
+
+  el.querySelectorAll('tbody tr:not(.group-row)').forEach(tr => {
     tr.addEventListener('click', e => {
       if (e.target.closest('[data-stop]')) return;
       const item = ITEMS.find(i => i.id === tr.dataset.id);
       if (item) openInventoryEditor(item);
     });
   });
+}
+
+async function markPickedUp(ids) {
+  if (!ids?.length) return;
+  const { error } = await supabase
+    .from('inventory').update({ acquisition_status: 'picked_up' }).in('id', ids);
+  if (error) { alert(`Couldn't mark picked up: ${error.message}`); return; }
+  SELECTED_INV.clear();
+  renderInventory();
+}
+
+async function bulkMarkPickedUp() {
+  const ids = [...SELECTED_INV].filter(id => {
+    const it = ITEMS.find(i => i.id === id);
+    return it?.acquisition_status === 'delivered';
+  });
+  if (!ids.length) return;
+  await markPickedUp(ids);
 }
 
 async function bulkDeleteInventory() {
