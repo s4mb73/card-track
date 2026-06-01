@@ -103,6 +103,7 @@ let ITEMS = [];
 let ADDRESSES = [];
 let ADDRESS_MAP = new Map();
 let inventoryFilter = 'all';
+let inventorySort   = 'newest';
 let SELECTED_INV    = new Set();
 
 // ── Generic helpers ───────────────────────────────────────────────────────────
@@ -225,6 +226,42 @@ function renderSummary() {
 }
 
 // ── Inventory ─────────────────────────────────────────────────────────────────
+// Inventory sort: options for the "Sort by" dropdown + the comparator.
+// Default is newest-first. `inventorySort` (declared above) holds the choice.
+const SORT_OPTIONS = [
+  ['newest',    'Newest first'],
+  ['oldest',    'Oldest first'],
+  ['status',    'Status (urgent first)'],
+  ['recipient', 'Recipient (A–Z)'],
+  ['item',      'Item (A–Z)'],
+  ['cost_high', 'Cost (high → low)'],
+  ['cost_low',  'Cost (low → high)'],
+];
+const STATUS_SORT_RANK = {
+  out_for_delivery: 0, in_transit: 1, confirmed: 2, delivered: 3, failed: 4, cancelled: 5,
+};
+function itemOrderTime(i) {
+  const d = i.date_ordered || i.created_at;
+  const t = d ? new Date(d).getTime() : 0;
+  return Number.isNaN(t) ? 0 : t;
+}
+function itemRecipientName(i) {
+  return (ADDRESS_MAP.get(i.recipient_address_id)?.full_name || '').toLowerCase();
+}
+function compareInventory(a, b, sort) {
+  switch (sort) {
+    case 'oldest':    return itemOrderTime(a) - itemOrderTime(b);
+    case 'status':    return (STATUS_SORT_RANK[a.acquisition_status] ?? 9) - (STATUS_SORT_RANK[b.acquisition_status] ?? 9)
+                          || itemOrderTime(b) - itemOrderTime(a);
+    case 'recipient': return itemRecipientName(a).localeCompare(itemRecipientName(b)) || itemOrderTime(b) - itemOrderTime(a);
+    case 'item':      return String(a.item || '').localeCompare(String(b.item || ''));
+    case 'cost_high': return (Number(b.cost) || 0) - (Number(a.cost) || 0);
+    case 'cost_low':  return (Number(a.cost) || 0) - (Number(b.cost) || 0);
+    case 'newest':
+    default:          return itemOrderTime(b) - itemOrderTime(a);
+  }
+}
+
 function renderInventory() {
   const el = document.getElementById('tab-inventory');
 
@@ -237,12 +274,16 @@ function renderInventory() {
     ? ITEMS.filter(i => i.acquisition_status === 'cancelled').length
     : 0;
 
+  filtered.sort((a, b) => compareInventory(a, b, inventorySort));
+
   const FILTER_KEYS = ['all', ...ACQ_STATUSES];
   const options = FILTER_KEYS.map(k => `
     <option value="${esc(k)}" ${k === inventoryFilter ? 'selected' : ''}>
       ${k === 'all' ? 'All (excl. cancelled)' : esc(statusLabel(k))}
     </option>
   `).join('');
+  const sortOpts = SORT_OPTIONS.map(([v, l]) =>
+    `<option value="${esc(v)}" ${v === inventorySort ? 'selected' : ''}>${esc(l)}</option>`).join('');
 
   // Drop any selections whose row no longer exists in the filtered view —
   // e.g. you select two rows, change the status filter, then change back.
@@ -305,7 +346,8 @@ function renderInventory() {
         </div>
         <div class="toolbar">
           ${SELECTED_INV.size ? `<button class="btn-danger btn-add" id="bulk-delete-inv">Delete ${SELECTED_INV.size} item${SELECTED_INV.size === 1 ? '' : 's'}</button>` : ''}
-          <select id="status-filter">${options}</select>
+          <select id="status-filter" aria-label="Filter by status">${options}</select>
+          <select id="inv-sort" aria-label="Sort by">${sortOpts}</select>
           <button class="btn-primary btn-add" id="add-inv">+ Add item</button>
         </div>
       </div>
@@ -328,6 +370,10 @@ function renderInventory() {
     inventoryFilter = e.target.value;
     renderInventory();
     renderSummary();   // KPIs follow the active filter
+  });
+  document.getElementById('inv-sort').addEventListener('change', e => {
+    inventorySort = e.target.value;
+    renderInventory();
   });
   document.getElementById('add-inv').addEventListener('click', () => openInventoryEditor());
 
