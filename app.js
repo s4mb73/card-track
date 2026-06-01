@@ -193,17 +193,28 @@ async function loadData() {
 
 // ── KPI tiles ─────────────────────────────────────────────────────────────────
 function renderSummary() {
-  const total     = ITEMS.length;
-  const spent     = ITEMS.reduce((s, i) => s + (Number(i.cost) || 0), 0);
-  const active    = ITEMS.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status)).length;
-  const delivered = ITEMS.filter(i => i.acquisition_status === 'delivered').length;
+  // Cancelled orders are refunded, so they never inflate Items/Spent. The KPIs
+  // also follow the active Inventory filter: Items + Spent narrow to whatever
+  // status is filtered (e.g. spend on delivered orders, or value of cancelled),
+  // while the status-breakdown tiles stay as stable global context.
+  const live      = ITEMS.filter(i => i.acquisition_status !== 'cancelled');
+  const cancelled = ITEMS.length - live.length;
+  const filtering = inventoryFilter !== 'all';
+  const scope     = filtering
+    ? ITEMS.filter(i => i.acquisition_status === inventoryFilter)
+    : live;
+  const spent     = scope.reduce((s, i) => s + (Number(i.cost) || 0), 0);
+  const active    = live.filter(i => ACTIVE_STATUSES.includes(i.acquisition_status)).length;
+  const delivered = live.filter(i => i.acquisition_status === 'delivered').length;
+  const suffix    = filtering ? ` · ${statusLabel(inventoryFilter)}` : '';
 
   const tiles = [
-    { label: 'Items',      value: total,            tint: 'purple' },
-    { label: 'Spent',      value: money(spent),     tint: 'green'  },
-    { label: 'In transit', value: active,           tint: 'blue'   },
-    { label: 'Delivered',  value: delivered,        tint: 'amber'  },
+    { label: `Items${suffix}`, value: scope.length, tint: 'purple' },
+    { label: `Spent${suffix}`, value: money(spent), tint: 'green'  },
+    { label: 'In transit',     value: active,       tint: 'blue'   },
+    { label: 'Delivered',      value: delivered,    tint: 'amber'  },
   ];
+  if (cancelled) tiles.push({ label: 'Cancelled', value: cancelled, tint: 'slate' });
 
   document.getElementById('summary').innerHTML = tiles.map(t => `
     <div class="kpi" data-tint="${esc(t.tint)}">
@@ -217,14 +228,19 @@ function renderSummary() {
 function renderInventory() {
   const el = document.getElementById('tab-inventory');
 
+  // Default ("all") hides cancelled orders so refunded items don't clutter the
+  // list — pick "Cancelled" from the filter to see them.
   const filtered = inventoryFilter === 'all'
-    ? ITEMS
+    ? ITEMS.filter(i => i.acquisition_status !== 'cancelled')
     : ITEMS.filter(i => i.acquisition_status === inventoryFilter);
+  const cancelledHidden = inventoryFilter === 'all'
+    ? ITEMS.filter(i => i.acquisition_status === 'cancelled').length
+    : 0;
 
   const FILTER_KEYS = ['all', ...ACQ_STATUSES];
   const options = FILTER_KEYS.map(k => `
     <option value="${esc(k)}" ${k === inventoryFilter ? 'selected' : ''}>
-      ${k === 'all' ? 'All statuses' : esc(statusLabel(k))}
+      ${k === 'all' ? 'All (excl. cancelled)' : esc(statusLabel(k))}
     </option>
   `).join('');
 
@@ -285,7 +301,7 @@ function renderInventory() {
       <div class="section-head">
         <div>
           <h2>Items</h2>
-          <div class="sub">${filtered.length} of ${ITEMS.length} item${ITEMS.length === 1 ? '' : 's'}</div>
+          <div class="sub">${filtered.length} item${filtered.length === 1 ? '' : 's'}${cancelledHidden ? ` · ${cancelledHidden} cancelled hidden` : ''}</div>
         </div>
         <div class="toolbar">
           ${SELECTED_INV.size ? `<button class="btn-danger btn-add" id="bulk-delete-inv">Delete ${SELECTED_INV.size} item${SELECTED_INV.size === 1 ? '' : 's'}</button>` : ''}
@@ -311,6 +327,7 @@ function renderInventory() {
   document.getElementById('status-filter').addEventListener('change', e => {
     inventoryFilter = e.target.value;
     renderInventory();
+    renderSummary();   // KPIs follow the active filter
   });
   document.getElementById('add-inv').addEventListener('click', () => openInventoryEditor());
 
@@ -361,7 +378,8 @@ function renderAddresses() {
   const el = document.getElementById('tab-addresses');
 
   const rows = ADDRESSES.map(a => {
-    const myItems   = ITEMS.filter(i => i.recipient_address_id === a.id);
+    // Exclude cancelled (refunded) orders from each recipient's count + spend.
+    const myItems   = ITEMS.filter(i => i.recipient_address_id === a.id && i.acquisition_status !== 'cancelled');
     const totalCost = myItems.reduce((s, i) => s + (Number(i.cost) || 0), 0);
     const street    = [a.line1, a.line2, a.line3].map(s => String(s || '').trim()).filter(Boolean).join(', ');
     const where     = [a.town_city, a.postcode].map(s => String(s || '').trim()).filter(Boolean).join(' · ');

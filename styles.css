@@ -282,6 +282,7 @@ button:focus-visible { outline: none; box-shadow: var(--shadow-focus); }
 .kpi[data-tint="green"]  .label .dot { background: var(--c-green); }
 .kpi[data-tint="blue"]   .label .dot { background: var(--c-blue); }
 .kpi[data-tint="amber"]  .label .dot { background: var(--c-amber); }
+.kpi[data-tint="slate"]  .label .dot { background: var(--c-slate); }
 
 /* ── Section / surface card ─────────────────────────────── */
 .section {
