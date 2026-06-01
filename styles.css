@@ -636,6 +636,20 @@ tr.group-row strong { font-weight: 600; color: var(--text); }
 .age-badge.fresh  { background: rgba(16, 185, 129, 0.10); color: #047857; }
 .age-badge.warn   { background: rgba(245, 158, 11, 0.13); color: #b45309; }
 .age-badge.urgent { background: rgba(239,  68, 68, 0.13); color: #b91c1c; }
+
+/* Status-coloured left edge on inventory rows so the table reads at a
+   glance — same colours as the status pills, just translated into a
+   2px accent stripe on the leading cell. */
+.inv-table tbody tr[data-status="confirmed"]        > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-slate); }
+.inv-table tbody tr[data-status="in_transit"]       > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-blue);  background: rgba(59, 130, 246, 0.025); }
+.inv-table tbody tr[data-status="out_for_delivery"] > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-amber); background: rgba(245, 158, 11, 0.04); }
+.inv-table tbody tr[data-status="delivered"]        > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-green); background: rgba(16, 185, 129, 0.04); }
+.inv-table tbody tr[data-status="picked_up"]        > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-purple); }
+.inv-table tbody tr[data-status="failed"]           > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-red);   background: rgba(239,  68,  68, 0.04); }
+.inv-table tbody tr[data-status="cancelled"]        > td:nth-child(2) { box-shadow: inset 3px 0 0 var(--c-slate); }
+
+/* Subtle hover lift on inventory rows now that they carry colour cues. */
+.inv-table tbody tr:not(.group-row):hover > td { background-color: rgba(91, 84, 230, 0.025); }
 tr.is-selected { background: rgba(99, 102, 241, 0.07); }
 
 .ingest-progress { margin-top: 12px; }

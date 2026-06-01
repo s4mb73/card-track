@@ -339,7 +339,7 @@ function renderInventory() {
     }
 
     return `
-      <tr data-kind="inv" data-id="${esc(item.id)}" class="${checked ? 'is-selected' : ''}">
+      <tr data-kind="inv" data-id="${esc(item.id)}" data-status="${esc(item.acquisition_status)}" class="${checked ? 'is-selected' : ''}">
         <td class="select-cell" data-stop>
           <input type="checkbox" class="row-select" data-id="${esc(item.id)}" ${checked ? 'checked' : ''}>
         </td>
